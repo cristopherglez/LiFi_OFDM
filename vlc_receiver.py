@@ -42,21 +42,26 @@ class OFDMReceiver:
             start_flag (bool): True if packet is detected, False otherwise.
             start_index (int): The index of the detected packet start.
         """
+        # Normalize STS and received signal
+        sts_norm = self.sts_no_cp / np.max(np.abs(self.sts_no_cp))
+        signal_norm = received_signal / np.max(np.abs(received_signal))
+
         # Compute auto-correlation of known STS
-        sts_auto_corr = np.abs(correlate(self.sts_no_cp, self.sts_no_cp, mode='full'))
-        threshold = 0.5 * np.max(np.abs(sts_auto_corr))
+        sts_auto_corr = correlate(sts_norm, sts_norm, mode='full')
+        threshold = 0.25 * np.max(np.abs(sts_auto_corr))
 
         # Compute normalized cross-correlation
-        correlation_values = np.abs(correlate(received_signal, self.sts_no_cp, mode='full'))
+        correlation_values = correlate(signal_norm, sts_norm, mode='full')
         peak_value = np.max(np.abs(correlation_values))
         start_index = np.argmax(np.abs(correlation_values))
 
         start_flag = peak_value > threshold
-        #start_index += self.cp_length*self.oversampling_factor  # Adjust for CP and oversampling 
+        start_index #+= self.cp_length*self.oversampling_factor  # Adjust for CP and oversampling 
         # Notify if packet is detected
         if start_flag:
             print(f"Packet detected at index: {start_index}")
         return start_flag, start_index, correlation_values, sts_auto_corr
+    
 
     def channel_estimation_ls(self, received_symbol_no_cp, lts_no_cp=None):
         # Print lengths
@@ -193,12 +198,13 @@ class OFDMReceiver:
                         print("Start index negative, resetting start_flag")
                     else:
                         print("Start index too large, resetting start_flag")
-                    return self.start_flag, self.start_index, sts_auto_corr, 0, self.sts_no_cp
+                    return self.start_flag, self.start_index, np.fft.fft(signal), 0, self.Eq
                 else:
-                    return self.start_flag, self.start_index, sts_auto_corr, 0, self.sts_no_cp
+                    return self.start_flag, self.start_index, np.fft.fft(signal), 0, self.Eq
         else: # start_flag is True
             if self.i == 0:
                 chunk = signal[self.start_index:self.start_index + self.window_length]
+                self.sfo_deviation += self.frequency_domain_SFO_estimation(x1, self.Nsub)
                 # Start SFO estimation
                 print(f"Cumulative SFO deviation after iteration {self.i}: {self.sfo_deviation}")
                 self.i += 1
@@ -215,18 +221,20 @@ class OFDMReceiver:
                 print(f"Normalized SFO after final calculation: {self.normalized_sfo}")
                 # Synchronize with minn
                 self.start_index, _, _, _ = self.minn_method_sto_estimation(signal)
+                if self.start_index > self.window_length//2:
+                    self.start_index -= self.window_length//2
                 self.i += 1
                 return self.start_flag, self.start_index, np.fft.fft(signal), self.i, self.Eq
             elif self.i > self.sfo_repetitions and self.i < self.sfo_repetitions + self.lts_repetitions:
                 # Perform channel estimation
                 chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
-                self.Eq = self.channel_estimation_ls(chunk)
+                self.Eq += self.channel_estimation_ls(chunk)
                 self.i += 1
                 return self.start_flag, self.start_index, np.fft.fft(signal), self.i, self.Eq
             elif self.i == self.lts_repetitions + self.sfo_repetitions:
                 # Finalize LTS estimation
                 #self.Eq = self.Eq / (self.lts_repetitions-1)
-                self.Eq = np.ones(self.Nsub)
+                #self.Eq = np.ones(self.Nsub)
                 self.i += 1
                 return self.start_flag, self.start_index, np.fft.fft(signal), self.i, self.Eq
             elif self.i > self.lts_repetitions + self.sfo_repetitions and self.i < self.lts_repetitions + self.sfo_repetitions + self.data_frame_length:

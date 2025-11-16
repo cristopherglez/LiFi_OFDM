@@ -8,7 +8,7 @@ def get_config():
     oversampling_factor = 5  # Note: parameter name in constructor
     data_frame_length = 10
     lts_repetitions = 5
-    sfo_repetitions = 5
+    sfo_repetitions = 4
 
     # -------- Load reference signals from WAV files --------
 

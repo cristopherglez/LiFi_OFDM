@@ -122,7 +122,9 @@ def receiver_thread():
                         indexes.pop(0)
                     # also store per-i for reference if needed
                     latest_start_by_i[i] = int(start_index)
-                    print(f"Detected start_index for i={i}: {latest_start_by_i[i]}")
+                    # if i is the same, don't print repeatedly
+                    if latest_start_by_i[i] != int(start_index):
+                        print(f"Detected start_index for i={i}: {latest_start_by_i[i]}")
 
                 if isinstance(y, np.ndarray) and y.size > 0:
                     latest_y_by_i[i] = y.copy()
