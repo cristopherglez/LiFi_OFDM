@@ -11,23 +11,13 @@ def get_config():
     sfo_repetitions = 5
 
     # -------- Load reference signals from WAV files --------
-    try:
-        # Load STS from WAV file
-        _, sts_signal = wav.read('FullReceiverSFO/DEFzc_sequence_256_lfft_times5_44100ksps.wav')
-        sts_no_cp = sts_signal.astype(np.float32)
-        print(f"Loaded STS signal with length: {len(sts_no_cp)}")
-    except FileNotFoundError:
-        print("STS WAV file not found, using placeholder")
-        sts_no_cp = np.ones(Lfft, dtype=np.float32)
-    
-    try:
-        # Load LTS from WAV file
-        _, lts_signal = wav.read('/home/cris_/Documents/Python/FullReceiverSFO/DEFlts_256_lfft_times_5_44100ksps.wav')
-        lts_no_cp = lts_signal.astype(np.float32)
-        print(f"Loaded LTS signal with length: {len(lts_no_cp)}")
-    except FileNotFoundError:
-        print("LTS WAV file not found, using placeholder")
-        lts_no_cp = np.ones(Lfft, dtype=np.float32)
+
+    sts_sample_rate, sts_signal = wav.read('/home/cris/Documents/Python/LiFi_OFDM/DEFzc_sequence_256_lfft_times5_44100ksps.wav')
+    sts_no_cp = sts_signal.astype(np.int16)
+    print(f"Loaded STS signal with length: {len(sts_no_cp)}")
+    lts_sample_rate, lts_signal = wav.read('/home/cris/Documents/Python/LiFi_OFDM/DEFlts_256_lfft_times_5_44100ksps.wav')
+    lts_no_cp = lts_signal.astype(np.int16)
+    print(f"Loaded LTS signal with length: {len(lts_no_cp)}")
 
     return {
         'Lfft': Lfft,

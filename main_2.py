@@ -51,7 +51,7 @@ symbols_collected = False
 global vpos
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-DEVICE_INDEX = 1  # use default input; set to specific index if needed
+DEVICE_INDEX = 0  # use default input; set to specific index if needed
 
 p = pyaudio.PyAudio()
 stream = p.open(format=FORMAT,

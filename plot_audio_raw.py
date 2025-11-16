@@ -5,15 +5,15 @@ from config import get_config
 
 # Load config for audio parameters
 cfg = get_config()
-RATE = cfg['sample_rate']
-DURATION = 2.0  # seconds
+RATE =44100
+DURATION = 10.0  # seconds
 CHUNK = 1024
 
 # Calculate total samples needed
 total_samples = int(RATE * DURATION)
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-DEVICE_INDEX = 1  # use default input
+DEVICE_INDEX = 0  # use default input
 
 print(f"Recording {DURATION} seconds of audio at {RATE} Hz...")
 

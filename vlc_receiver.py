@@ -16,8 +16,8 @@ class OFDMReceiver:
         self.sfo_repetitions = sfo_repetitions
 
         # References
-        self.sts_no_cp = np.asarray(sts_no_cp, dtype=np.float16)
-        self.lts_no_cp = np.asarray(lts_no_cp, dtype=np.float16)
+        self.sts_no_cp = sts_no_cp
+        self.lts_no_cp = lts_no_cp
 
         # QPSK reference
         self.qpsk_points = np.array([1+1j, 1-1j, -1+1j, -1-1j], dtype=complex)
@@ -42,25 +42,21 @@ class OFDMReceiver:
             start_flag (bool): True if packet is detected, False otherwise.
             start_index (int): The index of the detected packet start.
         """
-        # Normalize STS and received signal
-        sts_norm = self.sts_no_cp / np.max(np.abs(self.sts_no_cp))
-        signal_norm = received_signal / np.max(np.abs(received_signal))
-
         # Compute auto-correlation of known STS
-        sts_auto_corr = correlate(sts_norm, sts_norm, mode='valid')
-        threshold = 0.23 * np.max(np.abs(sts_auto_corr))
+        sts_auto_corr = np.abs(correlate(self.sts_no_cp, self.sts_no_cp, mode='full'))
+        threshold = 0.5 * np.max(np.abs(sts_auto_corr))
 
         # Compute normalized cross-correlation
-        correlation_values = correlate(signal_norm, sts_norm, mode='valid')
+        correlation_values = np.abs(correlate(received_signal, self.sts_no_cp, mode='full'))
         peak_value = np.max(np.abs(correlation_values))
         start_index = np.argmax(np.abs(correlation_values))
 
         start_flag = peak_value > threshold
-        start_index #+= self.cp_length*self.oversampling_factor  # Adjust for CP and oversampling 
+        #start_index += self.cp_length*self.oversampling_factor  # Adjust for CP and oversampling 
         # Notify if packet is detected
         if start_flag:
             print(f"Packet detected at index: {start_index}")
-        return start_flag, start_index#, correlation_values, sts_auto_corr
+        return start_flag, start_index, correlation_values, sts_auto_corr
 
     def channel_estimation_ls(self, received_symbol_no_cp, lts_no_cp=None):
         # Print lengths
@@ -185,12 +181,10 @@ class OFDMReceiver:
         return deviation#, magnitudes
 
     def process(self, x1, x2):
-        signal = np.concatenate([x1, x2])
-        signal = signal / (np.linalg.norm(signal) + 1e-12)
-            
+        signal = np.concatenate([x1, x2]) 
         if not self.start_flag:
             # Perform packet detection, coarse sync
-            self.start_flag, self.start_index = self.packet_detection(signal)
+            self.start_flag, self.start_index, correlation_values, sts_auto_corr = self.packet_detection(signal)
             if self.start_flag:
                 if (self.start_index >= self.full_symbol_length*self.oversampling_factor) or (self.start_index < 0):
                     self.start_index = 0
@@ -199,9 +193,9 @@ class OFDMReceiver:
                         print("Start index negative, resetting start_flag")
                     else:
                         print("Start index too large, resetting start_flag")
-                    return self.start_flag, self.start_index, self.y, 0, self.Eq
+                    return self.start_flag, self.start_index, sts_auto_corr, 0, self.sts_no_cp
                 else:
-                    return self.start_flag, self.start_index, self.y, 0, self.Eq
+                    return self.start_flag, self.start_index, sts_auto_corr, 0, self.sts_no_cp
         else: # start_flag is True
             if self.i == 0:
                 chunk = signal[self.start_index:self.start_index + self.window_length]
