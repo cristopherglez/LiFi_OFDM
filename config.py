@@ -6,18 +6,27 @@ def get_config():
     Lfft = 256  # FFT length
     cp_length = 16 
     oversampling_factor = 5  # Note: parameter name in constructor
-    data_frame_length = 10
+    data_frame_length = 8
     lts_repetitions = 5
-    sfo_repetitions = 4
+    sfo_repetitions = 3
 
     # -------- Load reference signals from WAV files --------
 
     sts_sample_rate, sts_signal = wav.read('/home/cris/Documents/Python/LiFi_OFDM/DEFzc_sequence_256_lfft_times5_44100ksps.wav')
-    sts_no_cp = sts_signal.astype(np.int16)
-    print(f"Loaded STS signal with length: {len(sts_no_cp)}")
+    # Ensure 1D array - if stereo, take first channel; if mono, flatten
+    if sts_signal.ndim > 1:
+        sts_no_cp = sts_signal[:, 0].astype(np.int16)  # Take first channel
+    else:
+        sts_no_cp = sts_signal.flatten().astype(np.int16)  # Ensure 1D
+    print(f"Loaded STS signal with shape: {sts_no_cp.shape}")
+    
     lts_sample_rate, lts_signal = wav.read('/home/cris/Documents/Python/LiFi_OFDM/DEFlts_256_lfft_times_5_44100ksps.wav')
-    lts_no_cp = lts_signal.astype(np.int16)
-    print(f"Loaded LTS signal with length: {len(lts_no_cp)}")
+    # Ensure 1D array - if stereo, take first channel; if mono, flatten  
+    if lts_signal.ndim > 1:
+        lts_no_cp = lts_signal[:, 0].astype(np.int16)  # Take first channel
+    else:
+        lts_no_cp = lts_signal.flatten().astype(np.int16)  # Ensure 1D
+    print(f"Loaded LTS signal with shape: {lts_no_cp.shape}")
 
     return {
         'Lfft': Lfft,

@@ -120,11 +120,17 @@ def receiver_thread():
                     indexes.append(int(start_index))
                     if len(indexes) > 1000:
                         indexes.pop(0)
-                    # also store per-i for reference if needed
+                    # store per-i for this specific iteration
                     latest_start_by_i[i] = int(start_index)
-                    # if i is the same, don't print repeatedly
-                    if latest_start_by_i[i] != int(start_index):
-                        print(f"Detected start_index for i={i}: {latest_start_by_i[i]}")
+                    # Only print for iterations 0 through 15
+                    if i <= 15:
+                        print(f"Iteration i={i}: Detected start_index = {int(start_index)}")
+                elif start_flag:
+                    # Still update even if start_index is not valid, for completeness
+                    latest_start_by_i[i] = start_index
+                    # Only print for iterations 0 through 15
+                    if i <= 15:
+                        print(f"Iteration i={i}: start_flag=True but start_index={start_index} (invalid)")
 
                 if isinstance(y, np.ndarray) and y.size > 0:
                     latest_y_by_i[i] = y.copy()
@@ -219,8 +225,8 @@ try:
     ax_cons.set_xlabel("In-phase")
     ax_cons.set_ylabel("Quadrature")
     ax_cons.grid(True)
-    ax_cons.set_xlim(-5, 5)
-    ax_cons.set_ylim(-5, 5)
+    ax_cons.set_xlim(-100, 100)
+    ax_cons.set_ylim(-100, 100)
 
     # Figure 1: Equalizers (magitude dB + phase) stacked per i
     fig_eq, axes_eq = plt.subplots(N_IDX, 1, figsize=(10, max(6, 0.6 * N_IDX)), num=f"Equalizers i=0..{N_IDX-1}")
@@ -258,19 +264,34 @@ try:
             t = np.arange(len(xvals))
             ax_x1.plot(t, xvals, '-', lw=1)
             ax_x1.set_xlim(0, len(xvals) - 1)
-            # Draw up to MAX_LINES vertical lines for detected starts (first 20)
+            
+            # Plot vertical line for start index detected for this specific iteration (idx)
             x1_len = len(latest_x1_by_i[idx]) if isinstance(latest_x1_by_i[idx], np.ndarray) else 0
-            MAX_LINES = 20
-            for s in indexes_copy[:MAX_LINES]:
+            
+            # First, plot the specific start index for this iteration if available
+            start_idx_for_this_i = latest_start_by_i[idx]
+            if start_idx_for_this_i is not None and isinstance(start_idx_for_this_i, (int, np.integer)):
+                pos = x1_len + int(start_idx_for_this_i)
+                if 0 <= pos < len(xvals):
+                    ax_x1.axvline(pos, color='red', linestyle='-', linewidth=2.5, alpha=0.8, 
+                                 label=f'Start idx={start_idx_for_this_i}', zorder=20)
+            
+            # Also draw recent start indices from all iterations for context (lighter)
+            MAX_LINES = 10
+            for line_num, s in enumerate(indexes_copy[-MAX_LINES:]):  # Last 10 detections
                 if not isinstance(s, (int, np.integer)):
                     continue
-                pos = x1_len + int(s) + CP
-                end_pos = pos + 2047
+                pos = x1_len + int(s)
                 if pos < 0 or pos >= len(xvals):
                     continue
-                ax_x1.axvline(pos, color='red', linestyle='--', linewidth=1.6, alpha=0.15, zorder=15)
-                if 0 <= end_pos < len(xvals):
-                    ax_x1.axvline(end_pos, color='magenta', linestyle='--', linewidth=1.2, alpha=0.15, zorder=14)
+                # Make older lines more transparent
+                alpha_val = 0.1 + 0.3 * (line_num / max(1, MAX_LINES - 1))
+                ax_x1.axvline(pos, color='orange', linestyle='--', linewidth=1.0, 
+                             alpha=alpha_val, zorder=10)
+            
+            # Add legend if there's a main start line
+            if start_idx_for_this_i is not None:
+                ax_x1.legend(fontsize='small', loc='upper right')
         else:
             ax_x1.text(0.5, 0.5, "no x1||x2", ha='center', va='center', transform=ax_x1.transAxes)
         ax_x1.set_title(f"i={idx} x1||x2")

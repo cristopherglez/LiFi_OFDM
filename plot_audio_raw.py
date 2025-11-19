@@ -6,7 +6,7 @@ from config import get_config
 # Load config for audio parameters
 cfg = get_config()
 RATE =44100
-DURATION = 10.0  # seconds
+DURATION = 3.0  # seconds
 CHUNK = 1024
 
 # Calculate total samples needed
