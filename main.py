@@ -41,10 +41,10 @@ latest_eq = None                 # keep for backward compatibility (optional)
 eq_ready = False                 # set True when final equalizer (i==5) has been captured
 eq_plotted = False               # set True after we've plotted the equalizer once
 
-# NEW: collect exactly 100 y-vectors of expected length (Lfft/2 - 1)
+# NEW: collect fewer y-vectors of expected length (Lfft/2 - 1)
 expected_sym_len = Lfft // 2 - 1
-collected_ys = []                # list to hold up to 100 y arrays
-symbols_needed = 100
+collected_ys = []                # list to hold y arrays
+symbols_needed = 20              # Reduced from 100 to 20 symbols
 symbols_collected = False
 
 
@@ -102,17 +102,24 @@ def receiver_thread():
         # process uses current x1 (previous chunk) and current x2
         start_flag, start_index, y, i, Eq = receiver.process(x1, x2)
 
-        # Capture latest x1, x2, start_index and y and Eq for this i (overwrite latest)
+        # Capture latest x1, x2, start_index and y and Eq for this i (only when we have valid data)
         if 0 <= i < N_IDX:
             with eq_lock:
-                try:
-                    latest_x1_by_i[i] = x1.copy()
-                except Exception:
-                    latest_x1_by_i[i] = None
-                try:
-                    latest_x2_by_i[i] = x2.copy()
-                except Exception:
-                    latest_x2_by_i[i] = None
+                # Only store x1, x2 when we have a packet detection or valid processing
+                # This prevents storing noise when there's no signal
+                should_store_signal = (start_flag or 
+                                     (isinstance(y, np.ndarray) and y.size > 0) or
+                                     (Eq is not None and getattr(Eq, "size", 0) > 0))
+                
+                if should_store_signal:
+                    try:
+                        latest_x1_by_i[i] = x1.copy()
+                    except Exception:
+                        latest_x1_by_i[i] = None
+                    try:
+                        latest_x2_by_i[i] = x2.copy()
+                    except Exception:
+                        latest_x2_by_i[i] = None
 
                 # record most recent start_index values into global indexes list when flagged
                 if start_flag and isinstance(start_index, (int, np.integer)) and int(start_index) >= 0:
@@ -215,18 +222,37 @@ try:
     else:
         all_y = np.array([], dtype=complex)
 
-    fig_cons = plt.figure("Collected Constellation", figsize=(6, 6))
+    fig_cons = plt.figure("Collected Constellation", figsize=(8, 8))
     ax_cons = fig_cons.add_subplot(111)
     if all_y.size > 0:
-        ax_cons.plot(np.real(all_y), np.imag(all_y), 'o', markersize=4, alpha=0.6)
+        # Plot constellation points with raw values (no normalization)
+        real_vals = np.real(all_y)
+        imag_vals = np.imag(all_y)
+        
+        # Print debug info about the raw constellation values
+        print(f"Raw constellation statistics:")
+        print(f"  Real: min={np.min(real_vals):.2f}, max={np.max(real_vals):.2f}, mean={np.mean(real_vals):.2f}")
+        print(f"  Imag: min={np.min(imag_vals):.2f}, max={np.max(imag_vals):.2f}, mean={np.mean(imag_vals):.2f}")
+        
+        ax_cons.scatter(real_vals, imag_vals, s=40, alpha=0.8, edgecolors='black', linewidth=0.5)
+        
+        # Set axis limits based on actual raw data range with some padding
+        real_range = np.max(real_vals) - np.min(real_vals)
+        imag_range = np.max(imag_vals) - np.min(imag_vals)
+        padding = max(real_range, imag_range) * 0.1
+        
+        ax_cons.set_xlim(np.min(real_vals) - padding, np.max(real_vals) + padding)
+        ax_cons.set_ylim(np.min(imag_vals) - padding, np.max(imag_vals) + padding)
     else:
         ax_cons.text(0.5, 0.5, "no data", ha='center', va='center', transform=ax_cons.transAxes)
+        ax_cons.set_xlim(-10, 10)
+        ax_cons.set_ylim(-10, 10)
+    
     ax_cons.set_title(f"Collected {len(ys_copy_list)} y-vectors ({len(all_y)} symbols)")
     ax_cons.set_xlabel("In-phase")
     ax_cons.set_ylabel("Quadrature")
-    ax_cons.grid(True)
-    ax_cons.set_xlim(-100, 100)
-    ax_cons.set_ylim(-100, 100)
+    ax_cons.grid(True, alpha=0.3)
+    ax_cons.set_aspect('equal')
 
     # Figure 1: Equalizers (magitude dB + phase) stacked per i
     fig_eq, axes_eq = plt.subplots(N_IDX, 1, figsize=(10, max(6, 0.6 * N_IDX)), num=f"Equalizers i=0..{N_IDX-1}")
@@ -271,7 +297,7 @@ try:
             # First, plot the specific start index for this iteration if available
             start_idx_for_this_i = latest_start_by_i[idx]
             if start_idx_for_this_i is not None and isinstance(start_idx_for_this_i, (int, np.integer)):
-                pos = x1_len + int(start_idx_for_this_i)
+                pos = int(start_idx_for_this_i)
                 if 0 <= pos < len(xvals):
                     ax_x1.axvline(pos, color='red', linestyle='-', linewidth=2.5, alpha=0.8, 
                                  label=f'Start idx={start_idx_for_this_i}', zorder=20)
@@ -301,11 +327,10 @@ try:
         yvals = ys_last[idx]
         if yvals is not None and getattr(yvals, "size", 0) > 0:
             t_y = np.arange(len(yvals))
-            ax_y.plot(t_y, np.real(yvals), '-', label='real', linewidth=1)
-            ax_y.plot(t_y, np.imag(yvals), '-', label='imag', linewidth=1)
+            ax_y.plot(t_y, np.real(yvals), '-', linewidth=1)
+            ax_y.plot(t_y, np.imag(yvals), '-', linewidth=1)
             ax_y.set_xlabel("sample")
             ax_y.set_ylabel("value")
-            ax_y.legend(fontsize='small')
         else:
             ax_y.text(0.5, 0.5, "no y", ha='center', va='center', transform=ax_y.transAxes)
         ax_y.set_title(f"i={idx} y (real / imag)")
