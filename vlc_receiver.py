@@ -72,13 +72,13 @@ class OFDMReceiver:
         # Print lengths
         #print(f"Length of LTS (no CP): {len(self.lts_no_cp)}")
         #print(f"Length of received symbol (no CP): {len(received_symbol_no_cp)}")
-        delta = np.zeros(self.Lfft * self.oversampling_factor)
-        delta[1] = 1
+        #delta = np.zeros(self.Lfft * self.oversampling_factor)
+        #delta[1] = 1
         #print(f"Delta length: {len(delta)}")
         #X = np.fft.fft(np.real(self.lts_no_cp), n=self.Lfft)[1:self.Nsub+1]
-        X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
+        #X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
         Y = np.fft.fft(received_symbol_no_cp, n=self.Lfft)[1:self.Nsub+1]
-        Eq = X / (Y)  # zero-forcing equalizer, Eq ≈ 1/H
+        Eq = 1 / (Y) 
         #print(f"Eq length: {len(Eq)}")
         return Eq
 
@@ -227,7 +227,7 @@ class OFDMReceiver:
                 print(f"Normalized SFO after final calculation: {self.normalized_sfo}")
                 #self.sto_correction = self.sfo_deviation * self.oversampling_factor * 2/ (self.sfo_repetitions - 1)
                 #self.sto_correction = (self.full_symbol_length - self.full_symbol_length * (1 - self.normalized_sfo)) * self.oversampling_factor * 2
-                self.sto_correction = 2 * self.sfo_deviation * self.oversampling_factor
+                self.sto_correction = 2 * self.sfo_deviation * self.oversampling_factor * (self.Lfft/self.Nsub)
                 self.sto_int = int(self.sto_correction)
                 self.sto_frac = self.sto_correction - self.sto_int
                 self.sto_frac_corr = 0
@@ -270,8 +270,8 @@ class OFDMReceiver:
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif(self.i >= self.sfo_repetitions + 2) and (self.i <= self.sfo_repetitions + self.lts_repetitions):
                 self.index_correction()
-                #chunk = self.interpolate_correction(signal)
-                chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                chunk = self.interpolate_correction(signal)
+                #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
                 if self.i == self.sfo_repetitions + 1:
                     self.i += 1
                     return self.start_flag, self.start_index, self.y, self.i, self.Eq
@@ -284,11 +284,11 @@ class OFDMReceiver:
             elif self.i == self.lts_repetitions + self.sfo_repetitions + 1:
                 # SFO corrections
                 self.index_correction()
-                #chunk = self.interpolate_correction(signal)
-                chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
-                self.Eq += self.channel_estimation_ls(chunk)
+                chunk = self.interpolate_correction(signal)
+                #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                #self.Eq += self.channel_estimation_ls(chunk)
                 # Finalize LTS estimation
-                self.Eq = self.Eq / (self.lts_repetitions)
+                self.Eq = self.Eq / (self.lts_repetitions - 1)
                 print(f"Final channel equalizer Eq computed.")
                 #self.Eq = np.ones(self.Nsub)
                 self.y = chunk
@@ -303,8 +303,8 @@ class OFDMReceiver:
                     self.i += 1
                     return self.start_flag, self.start_index, self.y, self.i, self.Eq
                 else:
-                    #chunk = self.interpolate_correction(signal)
-                    chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                    chunk = self.interpolate_correction(signal)
+                    #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
                     # Process data frames
                     self.y = self.recover_dco_ofdm(chunk) * self.Eq
                     self.i += 1

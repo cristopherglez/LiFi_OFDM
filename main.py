@@ -28,7 +28,7 @@ running = True
 import threading
 eq_lock = threading.Lock()
 # keep single latest snapshot per i = 0..19
-N_IDX = 20                        # show i = 0..19
+N_IDX = 17                        # show i = 0..19
 latest_eqs = [None] * N_IDX       # Eq per i
 latest_x1_by_i = [None] * N_IDX   # store last x1 (previous chunk) per i
 latest_x2_by_i = [None] * N_IDX   # store last x2 (current chunk) per i
@@ -151,7 +151,9 @@ def receiver_thread():
                         except Exception:
                             vpos = None
         # If final equalizer has been seen, collect up to symbols_needed y-vectors (each of expected_sym_len)
-        if eq_ready and (not symbols_collected) and isinstance(y, np.ndarray) and y.size == expected_sym_len:
+        # Exclude symbols from the last iteration (i >= N_IDX-1) to avoid including final/noise data
+        if (eq_ready and (not symbols_collected) and isinstance(y, np.ndarray) and 
+            y.size == expected_sym_len and i < N_IDX-1):
             with eq_lock:
                 if len(collected_ys) < symbols_needed:
                     collected_ys.append(y.copy())
@@ -245,8 +247,8 @@ try:
         ax_cons.set_ylim(np.min(imag_vals) - padding, np.max(imag_vals) + padding)
     else:
         ax_cons.text(0.5, 0.5, "no data", ha='center', va='center', transform=ax_cons.transAxes)
-        ax_cons.set_xlim(-10, 10)
-        ax_cons.set_ylim(-10, 10)
+        ax_cons.set_xlim(-2, 2)
+        ax_cons.set_ylim(-2, 2)
     
     ax_cons.set_title(f"Collected {len(ys_copy_list)} y-vectors ({len(all_y)} symbols)")
     ax_cons.set_xlabel("In-phase")

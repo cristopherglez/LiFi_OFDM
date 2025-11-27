@@ -6,7 +6,7 @@ def get_config():
     Lfft = 256  # FFT length
     cp_length = 16 
     oversampling_factor = 5  # Note: parameter name in constructor
-    data_frame_length =10
+    data_frame_length = 3
     lts_repetitions = 5
     sfo_repetitions = 3
 
