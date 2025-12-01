@@ -36,7 +36,7 @@ def get_wav_config():
     print(f"Loaded LTS signal with shape: {lts_no_cp.shape}")
     
     # Load the full TX WAV file (recorded transmission)
-    input_wav_path = os.path.join(base_dir, 'DEFfull_tx256_lfft_times5_44100ksps_definitiva.wav')
+    input_wav_path = os.path.join(base_dir, 'DEFfull_tx256_lfft_times5_44100ksps_definitiva_rand.wav')
     #input_wav_path = os.path.join(base_dir, 'DEFfull_tx256_lfft_times5_44100ksps.wav')
     input_sample_rate, input_signal = wav.read(input_wav_path)
     if input_signal.ndim > 1:
