@@ -1,5 +1,4 @@
 import numpy as np
-from scipy import signal
 from scipy.signal import correlate
 
 class OFDMReceiver:
@@ -56,7 +55,6 @@ class OFDMReceiver:
         correlation_values = correlate(signal_norm, sts_norm, mode='valid')
         peak_value = np.max(np.abs(correlation_values))
         start_index = np.argmax(np.abs(correlation_values)) + self.cp_length*self.oversampling_factor
-
         
         if start_index < self.window_length:
             start_flag = peak_value > threshold
@@ -240,6 +238,7 @@ class OFDMReceiver:
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif self.i == (self.sfo_repetitions):
                 # Perform SFO calculation
+                self.sfo_deviation = 0
                 self.normalized_sfo = self.sfo_deviation / (self.sfo_repetitions * self.Nsub)
                 print(f"Normalized SFO after final calculation: {self.normalized_sfo}")
                 #self.sto_correction = self.sfo_deviation * self.oversampling_factor * 2/ (self.sfo_repetitions - 1)
@@ -415,8 +414,7 @@ class OFDMReceiver:
                 chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
                 self.Eq += self.channel_estimation_ls(chunk)
                 # Finalize LTS estimation
-                self.Eq = self.Eq / (self.lts_repetitions)
-                #self.Eq = np.ones(self.Nsub)
+                self.Eq = self.Eq / (self.lts_repetitions)                
                 print(f"Final channel equalizer Eq computed.")
                 self.y = chunk
                 self.i += 1

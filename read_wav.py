@@ -2,9 +2,6 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')  # Use interactive backend
 import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import scipy.signal
-
 from read_wav_config import get_wav_config
 from vlc_receiver import OFDMReceiver
 
@@ -17,7 +14,7 @@ CHUNK = (Lfft + CP) * cfg['oversampling_factor']  # samples per audio read
 SFO = -0.035  # Example SFO value for receiver
 SFO_ON = False  # Enable/Disable SFO correction for this test
 input_signal = cfg['input_signal']
-SNR = 600.0
+SNR = 999.0
 if SNR < 1000: # Not added above this level of SNR_dB
     signal_power = np.mean(input_signal**2)
     noise_power = signal_power / (10**(SNR / 10))
