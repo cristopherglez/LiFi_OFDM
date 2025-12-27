@@ -33,6 +33,7 @@ class OFDMReceiver:
         self.Eq = np.zeros(self.Nsub, dtype=complex)
         self.y = np.array([], dtype=complex)
         self.sfo_deviation = 0.0
+        self.sto_correction = 0.0
         self.minn_value = 0.0
 
     def packet_detection(self, received_signal):
@@ -74,33 +75,32 @@ class OFDMReceiver:
         #delta[1] = 1
         #print(f"Delta length: {len(delta)}")
         #data = np.ones_like(self.Nsub, dtype=complex)*(1 + 1j)
-        data = np.zeros(self.Nsub, dtype=complex)
-        data[:self.Nsub//4] = 1 + 1j
+        data = np.zeros(self.Nsub+1, dtype=complex)
+        """data[:self.Nsub//4] = 1 + 1j
         data[self.Nsub//4:self.Nsub//2] = -1 + 1j
         data[self.Nsub//2:3*self.Nsub//4] = -1 -1j    
         data[3*self.Nsub//4:] = 1 - 1j
         data = np.concatenate((np.zeros(1, dtype=complex), data))
         data_ask = np.conj(np.flip(data))
         new_data = np.concatenate((data, data_ask))
-        print(f"Data length: {len(new_data)}")
-        #data[:] = 1 + 1j
+        print(f"Data length: {len(new_data)}")"""
+        data[1:] = 4 + 0j 
         #X = np.fft.fft(np.real(self.lts_no_cp), n=self.Lfft)[1:self.Nsub+1]
         #X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
-        spectrum = np.fft.fft(received_symbol_no_cp)#[1:self.Nsub+1]
-        Y = []
-        for i in range(1, self.Nsub + 1):
-            Y.append(spectrum[i*self.oversampling_factor])
-        Eq = data[1:] / Y
+        spectrum = np.zeros(self.Nsub + 1, dtype=complex)
+        spectrum[1:] = self.recover_dco_ofdm(received_symbol_no_cp)
+        Eq = data[1:] / spectrum[1:]
         #print(f"Eq length: {len(Eq)}")
         return Eq
 
     def recover_dco_ofdm(self, input_symbol_no_cp):
-        spectrum = np.fft.fft(input_symbol_no_cp)
-        data = []
-        for i in range(1, self.Nsub + 1):
-            data.append(spectrum[i*self.oversampling_factor])
+        decimated_input = []
+        for i in range(0, self.Lfft):
+            new_index = int(i*self.oversampling_factor*(1+self.normalized_sfo))
+            decimated_input.append(input_symbol_no_cp[new_index])
+        print(f"Decimated input length: {len(decimated_input)}")
+        data = np.fft.fft(decimated_input)[1:self.Nsub+1]
         return data
-
     def qpsk_demod(self, symbols):
         if symbols.size == 0:
             return np.array([], dtype=np.uint8)
@@ -174,11 +174,13 @@ class OFDMReceiver:
 
     def frequency_domain_SFO_estimation(self, received_signal, n: int = 0):
         # Compute FFT
-        spectrum = np.fft.fftshift(np.fft.fft(received_signal))
-        magnitudes = np.abs(spectrum)[len(spectrum)//2:]
-        peak_index = np.argmax(magnitudes)
+        print(f"Length of received signal for SFO estimation: {len(received_signal)}")
+        spectrum = np.fft.fft(received_signal, n = self.Lfft * self.oversampling_factor)
+        magnitudes = np.abs(spectrum)
+        peak_bin = np.argmax(magnitudes[:self.Lfft*self.oversampling_factor//2])
         if self.oversampling_factor == 1:
-            peak_bin = peak_index*(self.Lfft)/((len(received_signal)))
+            f=peak_bin/(self.Lfft*self.oversampling_factor)
+            #print(f"Relative frequency: {f} (normalized to Nyquist max = pi)")
             if n != 0:
                 print(f"Peak frequency detected: {peak_bin}, real frequency: {n}")
                 deviation = peak_bin - n
@@ -186,18 +188,25 @@ class OFDMReceiver:
                 print(f"Peak frequency detected: {peak_bin}, real frequency: {(self.Lfft//2)-1}")
                 deviation = peak_bin - ((self.Lfft//2)-1)
         else:
-            peak_bin = peak_index*(self.Lfft* self.oversampling_factor)/((len(received_signal)))
+            f=peak_bin/(self.Lfft*self.oversampling_factor)
+            #print(f"Relative frequency: {f} (normalized to Nyquist max = pi)")
             if n != 0:
                 print(f"Peak frequency detected: {peak_bin}, real frequency: {n}")
                 deviation = n - peak_bin
             else:
                 print(f"Peak frequency detected: {peak_bin}, real frequency: {(self.Lfft//2)-1}")
                 deviation = peak_bin - ((self.Lfft//2)-1)
-
-        print(f"Frequency deviation: {deviation} bins")
-        sample_deviation = 2*deviation
-        print(f"Sample deviation: {sample_deviation} samples over {len(received_signal)} samples")
-        return deviation#, magnitudes
+        T_t = self.Lfft*self.oversampling_factor/n
+        T_r = self.Lfft*self.oversampling_factor/peak_bin
+        #print(f"Transmitter symbol period: {T_t} samples, Receiver symbol period: {T_r} samples")
+        estimated_samples = (T_r/T_t) * self.Lfft * self.oversampling_factor
+        #print(f"Estimated samples per symbol at receiver: {estimated_samples} samples")
+        #print(f"Frequency deviation: {deviation} bins")
+        sample_deviation = estimated_samples - self.Lfft*self.oversampling_factor
+        print(f"Sample deviation: {sample_deviation} samples over {(self.Lfft)*self.oversampling_factor} samples")
+        buffer_sample_deviation = sample_deviation*(1+(self.cp_length/self.Lfft))
+        print(f"Sample deviation: {buffer_sample_deviation} samples over {(self.Lfft+self.cp_length)*self.oversampling_factor} samples")
+        return buffer_sample_deviation, magnitudes, spectrum, peak_bin
 
     def index_correction(self):
         self.sto_acc += self.sto_frac
@@ -215,9 +224,10 @@ class OFDMReceiver:
         pass
 
     def interpolate_correction(self, signal):
-        length_with_sfo = self.Lfft * self.oversampling_factor * (1 + self.normalized_sfo)
+        length_with_sfo = (self.Lfft * self.oversampling_factor)
+        real_length = length_with_sfo - self.sto_correction
         chunk = signal[self.start_index : self.start_index + int(length_with_sfo)]
-        chunk = np.interp(np.linspace(0, len(chunk), self.Lfft * self.oversampling_factor, endpoint=False),
+        chunk = np.interp(np.linspace(0, len(chunk), int(real_length), endpoint=False),
                               np.arange(len(chunk)), chunk)
         return chunk
 
@@ -232,45 +242,51 @@ class OFDMReceiver:
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             # From 1 to number of sfo estimations
             elif self.i > 0 and self.i < (self.sfo_repetitions):
-                self.sfo_deviation += self.frequency_domain_SFO_estimation(x1, self.Nsub)
-                #self.y = np.fft.fft(x1, n=self.Lfft)
+                sfo_deviation_try, _, _, _= self.frequency_domain_SFO_estimation(x1, int(self.Lfft*self.oversampling_factor//2.5))
+                self.sto_correction += sfo_deviation_try
+                self.y = np.fft.fft(x1)
                 self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif self.i == (self.sfo_repetitions):
                 # Perform SFO calculation
-                self.sfo_deviation = 0
-                self.normalized_sfo = self.sfo_deviation / (self.sfo_repetitions * self.Nsub)
-                print(f"Normalized SFO after final calculation: {self.normalized_sfo}")
-                #self.sto_correction = self.sfo_deviation * self.oversampling_factor * 2/ (self.sfo_repetitions - 1)
-                #self.sto_correction = (self.full_symbol_length - self.full_symbol_length * (1 - self.normalized_sfo)) * self.oversampling_factor * 2
-                self.sto_correction = 2 * self.sfo_deviation * self.oversampling_factor * (self.Lfft/self.Nsub)
+                self.sto_correction /= self.sfo_repetitions
+                self.sto_correction = -2.1
+                print(f"Samples offset per buffer: {self.sto_correction}")
                 self.sto_int = int(self.sto_correction)
+                print(f"Integer STO correction (samples): {self.sto_int}")
                 self.sto_frac = self.sto_correction - self.sto_int
+                print(f"Fractional STO correction (samples): {self.sto_frac}")
                 self.sto_frac_corr = 0
                 print(f"STO correction (samples): {self.sto_correction}")
                 self.index_correction()
                 self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif (self.i >= (self.sfo_repetitions + 1)) and (self.i < (self.sfo_repetitions + 2)):
-                self.index_correction()
+                ######
+                new_index , new_minn_value, minn_metric = self.minn_method_sto_estimation(signal)
+                print(f"Minn's STO estimation for: {self.i}, metric value: {new_minn_value}")
+                if np.abs(new_minn_value) > np.abs(self.minn_value):
+                    print(f"Minn's metric improved from {self.minn_value} to {new_minn_value}")
+                    print(f"Updated Minn's STO estimation from {self.start_index} to {new_index}")
+                    self.start_index = new_index
+                    self.minn_value = new_minn_value
+                else:
+                    self.index_correction()
+                    self.i += 1
+                if self.start_index > self.window_length:
+                    self.start_index -= self.window_length
+                print(f"Start index after Minn's STO estimation: {self.start_index}")
+                print(f"i={self.i}")
+                self.y = minn_metric
+                ######
+                """self.index_correction()
                 if self.i == (self.sfo_repetitions + 1):
                     self.corrected_length = int(len(signal) * (1 - self.normalized_sfo))
                     print(f"real length of signal for Minn's STO estimation: {len(signal)}")
                     print(f"corrected length of signal for Minn's STO estimation: {self.corrected_length}")
                     print(f"difference in length: {len(signal) - self.corrected_length}")
                     print(f"Calculated sto_correction: {self.sto_correction}, sto_int: {self.sto_int}, sto_frac: {self.sto_frac}")
-                """if self.corrected_length != len(signal):  
-                    print(f"Corrected length of signal for Minn's STO estimation: {self.corrected_length}")
-                    corrected_signal = np.interp(np.linspace(0, len(signal), self.corrected_length, endpoint=False),
-                                            np.arange(len(signal)), signal)
-                    # Zero padding or truncating to ensure sufficient length
-                    if len(corrected_signal) < self.window_length * 2:
-                        pad_length = (self.window_length * 2) - len(corrected_signal)
-                        corrected_signal = np.pad(corrected_signal, (0, pad_length), 'constant')
-                    elif len(corrected_signal) > self.window_length * 2:
-                        corrected_signal = corrected_signal[:self.window_length * 2]
-                    signal = corrected_signal"""
-                new_index , new_minn_value, minn_metric = self.rzc_method_sto_estimation(signal)
+                new_index , new_minn_value, minn_metric = self.minn_method_sto_estimation(signal)
                 print(f"Minn's STO estimation for: {self.i}, metric value: {new_minn_value}")
                 if np.abs(new_minn_value) > np.abs(self.minn_value):
                     print(f"Minn's metric improved from {self.minn_value} to {new_minn_value}")
@@ -282,7 +298,7 @@ class OFDMReceiver:
                 if self.start_index > self.window_length:
                     self.start_index -= self.window_length
                 print(f"Start index after Minn's STO estimation: {self.start_index}")
-                print(f"i={self.i}")
+                print(f"i={self.i}")"""
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif(self.i >= self.sfo_repetitions + 2) and (self.i <= self.sfo_repetitions + self.lts_repetitions):
                 self.index_correction()
@@ -302,11 +318,11 @@ class OFDMReceiver:
                 self.index_correction()
                 chunk = self.interpolate_correction(signal)
                 #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
-                #self.Eq += self.channel_estimation_ls(chunk)
+                self.Eq =+ self.channel_estimation_ls(chunk)
                 # Finalize LTS estimation
-                self.Eq = self.Eq / (self.lts_repetitions - 1)
+                self.Eq = self.Eq / (self.lts_repetitions)
+                #self.Eq = np.ones(self.Nsub, dtype=complex)  # TEMPORARY SET TO ONES FOR TESTING
                 print(f"Final channel equalizer Eq computed.")
-                #self.Eq = np.ones(self.Nsub)
                 self.y = chunk
                 self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
@@ -320,7 +336,7 @@ class OFDMReceiver:
                     return self.start_flag, self.start_index, self.y, self.i, self.Eq
                 else:
                     chunk = self.interpolate_correction(signal)
-                    #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                    chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
                     # Process data frames
                     self.y = self.recover_dco_ofdm(chunk) * self.Eq
                     self.i += 1
@@ -339,46 +355,23 @@ class OFDMReceiver:
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             # From 1 to number of sfo estimations
             elif self.i > 0 and self.i < (self.sfo_repetitions):
-                self.sfo_deviation += self.frequency_domain_SFO_estimation(x1, self.Nsub)
+                sfo_deviation_try, _, _, _ = self.frequency_domain_SFO_estimation(x1, self.Nsub)
+                self.sfo_deviation += sfo_deviation_try
                 #self.y = np.fft.fft(x1, n=self.Lfft)
                 self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif self.i == (self.sfo_repetitions):
                 # Set SFO to zero
                 self.sfo_deviation = 0.0
-                #self.normalized_sfo = self.sfo_deviation / (self.sfo_repetitions * self.Nsub)
                 self.normalized_sfo = 0
-                print(f"Normalized SFO after final calculation: {self.normalized_sfo}")
-                #self.sto_correction = self.sfo_deviation * self.oversampling_factor * 2/ (self.sfo_repetitions - 1)
-                #self.sto_correction = (self.full_symbol_length - self.full_symbol_length * (1 - self.normalized_sfo)) * self.oversampling_factor * 2
-                #self.sto_correction = 2 * self.sfo_deviation * self.oversampling_factor * (self.Lfft/self.Nsub)
                 self.sto_correction = 0.0
                 self.sto_int = int(self.sto_correction)
                 self.sto_frac = self.sto_correction - self.sto_int
                 self.sto_frac_corr = 0
                 print(f"STO correction (samples): {self.sto_correction}")
-                #self.index_correction()
                 self.i += 1
                 return self.start_flag, self.start_index, {}, self.i, self.Eq
             elif (self.i >= (self.sfo_repetitions + 1)) and (self.i < (self.sfo_repetitions + 2)):
-                #self.index_correction()
-                """if self.i == (self.sfo_repetitions + 1):
-                    self.corrected_length = int(len(signal) * (1 - self.normalized_sfo))
-                    print(f"real length of signal for Minn's STO estimation: {len(signal)}")
-                    print(f"corrected length of signal for Minn's STO estimation: {self.corrected_length}")
-                    print(f"difference in length: {len(signal) - self.corrected_length}")
-                    print(f"Calculated sto_correction: {self.sto_correction}, sto_int: {self.sto_int}, sto_frac: {self.sto_frac}")
-                if self.corrected_length != len(signal):  
-                    print(f"Corrected length of signal for Minn's STO estimation: {self.corrected_length}")
-                    corrected_signal = np.interp(np.linspace(0, len(signal), self.corrected_length, endpoint=False),
-                                            np.arange(len(signal)), signal)
-                    # Zero padding or truncating to ensure sufficient length
-                    if len(corrected_signal) < self.window_length * 2:
-                        pad_length = (self.window_length * 2) - len(corrected_signal)
-                        corrected_signal = np.pad(corrected_signal, (0, pad_length), 'constant')
-                    elif len(corrected_signal) > self.window_length * 2:
-                        corrected_signal = corrected_signal[:self.window_length * 2]
-                    signal = corrected_signal"""
                 new_index , new_minn_value, minn_metric = self.rzc_method_sto_estimation(signal)
                 print(f"Minn's STO estimation for: {self.i}, metric value: {new_minn_value}")
                 if np.abs(new_minn_value) > np.abs(self.minn_value):
@@ -412,7 +405,7 @@ class OFDMReceiver:
                 #self.index_correction()
                 #chunk = self.interpolate_correction(signal)
                 chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
-                self.Eq += self.channel_estimation_ls(chunk)
+                self.Eq = self.channel_estimation_ls(chunk)
                 # Finalize LTS estimation
                 self.Eq = self.Eq / (self.lts_repetitions)                
                 print(f"Final channel equalizer Eq computed.")

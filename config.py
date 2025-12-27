@@ -4,10 +4,10 @@ import scipy.io.wavfile as wav
 
 def get_config():
     # -------- System parameters (must match TX) --------
-    Lfft = 256  # FFT length
-    cp_length = 16 
-    oversampling_factor = 5  # Note: parameter name in constructor
-    data_frame_length = 3
+    Lfft = 128  # FFT length
+    cp_length = int(Lfft / 8)  # Cyclic prefix length
+    oversampling_factor = 10  # Note: parameter name in constructor
+    data_frame_length = 5
     lts_repetitions = 5
     sfo_repetitions = 3
 

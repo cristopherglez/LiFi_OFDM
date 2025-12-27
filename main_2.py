@@ -2,8 +2,9 @@ import threading
 import numpy as np
 import pyaudio
 import queue
+import matplotlib
+matplotlib.use('TkAgg')  # Use interactive backend
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 
 from config import get_config
 from vlc_receiver import OFDMReceiver
@@ -24,34 +25,32 @@ errs_text_value = "Errors: --"
 dropped_frames = 0
 running = True
 
-# Add equalizer state (thread-safe)
+# Add equalizer state (thread-safe) - using same approach as read_wav.py
 import threading
 eq_lock = threading.Lock()
-# keep single latest snapshot per i = 0..19
-N_IDX = 17                        # show i = 0..19
+# Use N_IDX = 17 like in read_wav.py
+N_IDX = 17
 latest_eqs = [None] * N_IDX       # Eq per i
 latest_x1_by_i = [None] * N_IDX   # store last x1 (previous chunk) per i
 latest_x2_by_i = [None] * N_IDX   # store last x2 (current chunk) per i
 latest_start_by_i = [None] * N_IDX# store detected start_index relative to x2 per i
 latest_y_by_i = [None] * N_IDX    # store last y per i
-# New: global list of detected start indices (use this for vertical lines)
+# Global list of detected start indices (use this for vertical lines)
 indexes = []                      # will be appended with start_index values (int)
-# keep for backward compatibility (optional)
 latest_eq = None                 # keep for backward compatibility (optional)
-eq_ready = False                 # set True when final equalizer (i==5) has been captured
+eq_ready = False                 # set True when final equalizer (i==9) has been captured
 eq_plotted = False               # set True after we've plotted the equalizer once
 
-# NEW: collect fewer y-vectors of expected length (Lfft/2 - 1)
+# Collect symbols for constellation (like read_wav.py)
 expected_sym_len = Lfft // 2 - 1
 collected_ys = []                # list to hold y arrays
-symbols_needed = 20              # Reduced from 100 to 20 symbols
+symbols_needed = 20              # Same as read_wav.py
 symbols_collected = False
-
 
 global vpos
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-DEVICE_INDEX = 1  # use default input; set to specific index if needed
+DEVICE_INDEX = 0  # use default input; set to specific index if needed
 
 p = pyaudio.PyAudio()
 stream = p.open(format=FORMAT,
@@ -92,6 +91,8 @@ def receiver_thread():
     global collected_ys, symbols_collected, symbols_needed, indexes
     x1 = np.zeros(CHUNK, dtype=np.float32)
     MAX_SYM_WINDOW = 5000
+    chunk_idx = 0
+    
     while running:
         try:
             x2 = audio_queue.get(timeout=0.2)
@@ -102,11 +103,10 @@ def receiver_thread():
         # process uses current x1 (previous chunk) and current x2
         start_flag, start_index, y, i, Eq = receiver.process(x1, x2)
 
-        # Capture latest x1, x2, start_index and y and Eq for this i (only when we have valid data)
+        # Capture latest x1, x2, start_index and y and Eq for this i (using read_wav.py approach)
         if 0 <= i < N_IDX:
             with eq_lock:
-                # Only store x1, x2 when we have a packet detection or valid processing
-                # This prevents storing noise when there's no signal
+                # Only store x1, x2 when we have valid signal processing
                 should_store_signal = (start_flag or 
                                      (isinstance(y, np.ndarray) and y.size > 0) or
                                      (Eq is not None and getattr(Eq, "size", 0) > 0))
@@ -114,12 +114,9 @@ def receiver_thread():
                 if should_store_signal:
                     try:
                         latest_x1_by_i[i] = x1.copy()
-                    except Exception:
-                        latest_x1_by_i[i] = None
-                    try:
                         latest_x2_by_i[i] = x2.copy()
                     except Exception:
-                        latest_x2_by_i[i] = None
+                        pass
 
                 # record most recent start_index values into global indexes list when flagged
                 if start_flag and isinstance(start_index, (int, np.integer)) and int(start_index) >= 0:
@@ -131,27 +128,31 @@ def receiver_thread():
                     latest_start_by_i[i] = int(start_index)
                     # Only print for iterations 0 through 15
                     if i <= 10:
-                        print(f"Iteration i={i}: Detected start_index = {int(start_index)}")
+                        print(f"Chunk {chunk_idx}, Iteration i={i}: Detected start_index = {int(start_index)}")
                 elif start_flag:
                     # Still update even if start_index is not valid, for completeness
                     latest_start_by_i[i] = start_index
                     # Only print for iterations 0 through 15
-                    if i <= 10:
-                        print(f"Iteration i={i}: start_flag=True but start_index={start_index} (invalid)")
+                    if i <= 15:
+                        print(f"Chunk {chunk_idx}, Iteration i={i}: start_flag=True but start_index={start_index} (invalid)")
 
                 if isinstance(y, np.ndarray) and y.size > 0:
                     latest_y_by_i[i] = y.copy()
+                    
                 if Eq is not None and getattr(Eq, "size", 0) > 0:
                     latest_eqs[i] = Eq.copy()
-                    if i == 5:
+                    # Use i==9 like read_wav.py for final equalizer
+                    if i == 9:
                         latest_eq = Eq.copy()
                         eq_ready = True
+                        print("Final channel equalizer Eq computed.")
                         try:
                             vpos = receiver.start_index
                         except Exception:
                             vpos = None
+                            
         # If final equalizer has been seen, collect up to symbols_needed y-vectors (each of expected_sym_len)
-        # Exclude symbols from the last iteration (i >= N_IDX-1) to avoid including final/noise data
+        # Use same logic as read_wav.py but exclude last iteration
         if (eq_ready and (not symbols_collected) and isinstance(y, np.ndarray) and 
             y.size == expected_sym_len and i < N_IDX-1):
             with eq_lock:
@@ -159,9 +160,11 @@ def receiver_thread():
                     collected_ys.append(y.copy())
                     if len(collected_ys) >= symbols_needed:
                         symbols_collected = True
+                        print(f"Collected {symbols_needed} symbols at chunk {chunk_idx}")
 
         # then advance x1 for next iteration
         x1 = x2
+        chunk_idx += 1
 
         if isinstance(y, np.ndarray) and y.size > 0:
             # accumulate recent symbols for plotting (bounded window)
@@ -178,7 +181,7 @@ t_recv = threading.Thread(target=receiver_thread, daemon=True)
 t_audio.start()
 t_recv.start()
 
-# Show "Waiting for Packet" until we've collected the required 100 y-vectors
+# Show "Waiting for Packet" until we've collected the required symbols
 fig_wait = plt.figure("Status", figsize=(4, 2))
 ax_wait = fig_wait.add_subplot(111)
 ax_wait.axis('off')
@@ -191,48 +194,45 @@ try:
 
     # collected -> close waiting window
     plt.close(fig_wait)
+    print(f"\nProcessing complete. Collected {len(collected_ys)} symbols.")
 
-    # copy collected y-vectors and other state under lock
+    if len(collected_ys) == 0:
+        print("No symbols collected. Exiting.")
+        exit(0)
+
+    # copy collected y-vectors and other state under lock (using read_wav.py approach)
     with eq_lock:
-        ys_copy_list = [y.copy() for y in collected_ys] if len(collected_ys) > 0 else []
         eqs_copy = [e.copy() if e is not None else None for e in latest_eqs]
-        # build concatenated x1||x2 per i (no start/end arrays here)
+        # build concatenated x1||x2 per i
         xs_concat = []
         for idx in range(N_IDX):
             x1c = latest_x1_by_i[idx]
             x2c = latest_x2_by_i[idx]
             if isinstance(x1c, np.ndarray) and isinstance(x2c, np.ndarray):
                 concat = np.concatenate((x1c, x2c))
-                x1_len = len(x1c)
             elif isinstance(x1c, np.ndarray):
                 concat = x1c.copy()
-                x1_len = len(x1c)
             elif isinstance(x2c, np.ndarray):
                 concat = x2c.copy()
-                x1_len = 0
             else:
                 concat = None
-                x1_len = 0
             xs_concat.append(concat)
         # copy the global indexes for plotting (may be empty)
         indexes_copy = list(indexes)
         ys_last = [y.copy() if isinstance(y, np.ndarray) else None for y in latest_y_by_i]
 
-    # Plot consolidated constellation of the 100 collected y-vectors (flattened)
-    if len(ys_copy_list) > 0:
-        all_y = np.concatenate(ys_copy_list)
-    else:
-        all_y = np.array([], dtype=complex)
+    # Plot consolidated constellation of the collected y-vectors (using read_wav.py style)
+    all_y = np.concatenate(collected_ys) if len(collected_ys) > 0 else np.array([], dtype=complex)
 
     fig_cons = plt.figure("Collected Constellation", figsize=(8, 8))
     ax_cons = fig_cons.add_subplot(111)
     if all_y.size > 0:
-        # Plot constellation points with raw values (no normalization)
+        # Plot constellation points with raw values (no normalization - like read_wav.py)
         real_vals = np.real(all_y)
         imag_vals = np.imag(all_y)
         
         # Print debug info about the raw constellation values
-        print(f"Raw constellation statistics:")
+        print(f"\nRaw constellation statistics:")
         print(f"  Real: min={np.min(real_vals):.2f}, max={np.max(real_vals):.2f}, mean={np.mean(real_vals):.2f}")
         print(f"  Imag: min={np.min(imag_vals):.2f}, max={np.max(imag_vals):.2f}, mean={np.mean(imag_vals):.2f}")
         
@@ -250,13 +250,13 @@ try:
         ax_cons.set_xlim(-2, 2)
         ax_cons.set_ylim(-2, 2)
     
-    ax_cons.set_title(f"Collected {len(ys_copy_list)} y-vectors ({len(all_y)} symbols)")
+    ax_cons.set_title(f"Collected {len(collected_ys)} y-vectors ({len(all_y)} symbols)")
     ax_cons.set_xlabel("In-phase")
     ax_cons.set_ylabel("Quadrature")
     ax_cons.grid(True, alpha=0.3)
     ax_cons.set_aspect('equal')
 
-    # Figure 1: Equalizers (magitude dB + phase) stacked per i
+    # Figure 1: Equalizers (magnitude dB + phase) stacked per i (same as read_wav.py)
     fig_eq, axes_eq = plt.subplots(N_IDX, 1, figsize=(10, max(6, 0.6 * N_IDX)), num=f"Equalizers i=0..{N_IDX-1}")
     for idx in range(N_IDX):
         ax_eq = axes_eq[idx] if N_IDX > 1 else axes_eq
@@ -281,7 +281,7 @@ try:
             ax_eq.text(0.5, 0.5, "no EQ", ha='center', va='center', transform=ax_eq.transAxes)
         ax_eq.set_title(f"i={idx} EQ")
 
-    # Figure 2: Signals (x1||x2 and y real/imag) stacked per i (two columns)
+    # Figure 2: Signals (x1||x2 and y real/imag) stacked per i (same style as read_wav.py)
     fig_sig, axes_sig = plt.subplots(N_IDX, 2, figsize=(12, max(6, 1.2 * N_IDX)), num=f"Signals i=0..{N_IDX-1}")
     for idx in range(N_IDX):
         ax_x1 = axes_sig[idx, 0] if N_IDX > 1 else axes_sig[0]
@@ -329,16 +329,19 @@ try:
         yvals = ys_last[idx]
         if yvals is not None and getattr(yvals, "size", 0) > 0:
             t_y = np.arange(len(yvals))
-            ax_y.plot(t_y, np.real(yvals), '-', linewidth=1)
-            ax_y.plot(t_y, np.imag(yvals), '-', linewidth=1)
+            # Include labels like read_wav.py (different from main.py)
+            ax_y.plot(t_y, np.real(yvals), '-', linewidth=1, label='real')
+            ax_y.plot(t_y, np.imag(yvals), '-', linewidth=1, label='imag')
             ax_y.set_xlabel("sample")
             ax_y.set_ylabel("value")
+            ax_y.legend(fontsize='small')
         else:
             ax_y.text(0.5, 0.5, "no y", ha='center', va='center', transform=ax_y.transAxes)
         ax_y.set_title(f"i={idx} y (real / imag)")
 
     plt.tight_layout()
-    plt.show()
+    print("\nAll plots generated. Displaying windows...")
+    plt.show(block=True)  # Block until windows are closed like read_wav.py
 
 finally:
      # Cleanup: stop threads and audio
@@ -353,11 +356,5 @@ finally:
      except Exception as e:
          print(f"Error terminating PyAudio: {e}")
          print(f"Stopped. Dropped frames: {dropped_frames}")
-     try:
-         p.terminate()
-     except Exception as e:
-         print(f"Error terminating PyAudio: {e}")
-         print(f"Stopped. Dropped frames: {dropped_frames}")
 
-
-
+print("\nProcessing complete. Plot windows closed.")
