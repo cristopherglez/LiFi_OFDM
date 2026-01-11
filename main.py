@@ -16,6 +16,22 @@ CP = cfg['cp_length']
 CHUNK = (Lfft + CP) * cfg['oversampling_factor']  # samples per audio read
 receiver = OFDMReceiver(**cfg)
 
+# Reset receiver state to ensure clean start
+receiver.start_flag = False
+receiver.start_index = 0
+receiver.i = 0
+receiver.sfo = 0
+receiver.normalized_sfo = 0
+receiver.sto = 0.0
+receiver.sto_acc = 0.0
+receiver.Eq = np.zeros(receiver.Nsub, dtype=complex)
+receiver.y = np.array([], dtype=complex)
+receiver.sfo_deviation = 0.0
+receiver.sto_correction = -int((receiver.cp_length - 1) * receiver.oversampling_factor)
+receiver.minn_value = 0.0
+receiver.sto_counter = 0.0
+print("Receiver state reset for clean start")
+
 # -------- State for visualization and stats --------
 latest_symbols = np.array([], dtype=complex)
 recovered_bits = []
@@ -44,16 +60,87 @@ eq_plotted = False               # set True after we've plotted the equalizer on
 # NEW: collect fewer y-vectors of expected length (Lfft/2 - 1)
 expected_sym_len = Lfft // 2 - 1
 collected_ys = []                # list to hold y arrays
-symbols_needed = 20              # Reduced from 100 to 20 symbols
+symbols_needed = min(20, cfg['data_frame_length'])  # Don't request more symbols than available in data frame
 symbols_collected = False
 
 
 global vpos
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
-DEVICE_INDEX = 1  # use default input; set to specific index if needed
 
+# Initialize PyAudio and find a suitable input device
 p = pyaudio.PyAudio()
+
+# Function to find and test audio devices
+def find_working_audio_device():
+    print("Searching for working audio input device...")
+    
+    # Try default input device first
+    try:
+        default_input = p.get_default_input_device_info()
+        device_index = default_input['index']
+        max_channels = default_input['maxInputChannels']
+        
+        if max_channels >= 1:
+            print(f"Trying default input device {device_index}: {default_input['name']} (max channels: {max_channels})")
+            # Test if we can open it
+            test_stream = p.open(format=FORMAT,
+                               channels=1,
+                               rate=RATE,
+                               input=True,
+                               input_device_index=device_index,
+                               frames_per_buffer=1024)
+            test_stream.close()
+            print(f"✓ Default device {device_index} works!")
+            return device_index, 1
+    except Exception as e:
+        print(f"✗ Default input device failed: {e}")
+    
+    # Try all available devices
+    for i in range(p.get_device_count()):
+        try:
+            info = p.get_device_info_by_index(i)
+            if info['maxInputChannels'] >= 1:
+                print(f"Trying device {i}: {info['name']} (max input channels: {info['maxInputChannels']})")
+                
+                # Test mono first
+                try:
+                    test_stream = p.open(format=FORMAT,
+                                       channels=1,
+                                       rate=RATE,
+                                       input=True,
+                                       input_device_index=i,
+                                       frames_per_buffer=1024)
+                    test_stream.close()
+                    print(f"✓ Device {i} works with mono!")
+                    return i, 1
+                except Exception as e:
+                    print(f"  ✗ Mono failed: {e}")
+                
+                # If mono fails, try stereo
+                if info['maxInputChannels'] >= 2:
+                    try:
+                        test_stream = p.open(format=FORMAT,
+                                           channels=2,
+                                           rate=RATE,
+                                           input=True,
+                                           input_device_index=i,
+                                           frames_per_buffer=1024)
+                        test_stream.close()
+                        print(f"✓ Device {i} works with stereo!")
+                        return i, 2
+                    except Exception as e:
+                        print(f"  ✗ Stereo failed: {e}")
+        except Exception as e:
+            print(f"✗ Device {i} failed: {e}")
+            continue
+    
+    raise RuntimeError("No working audio input device found!")
+
+# Find working device
+DEVICE_INDEX, CHANNELS = find_working_audio_device()
+print(f"Using audio device {DEVICE_INDEX} with {CHANNELS} channels")
+
 stream = p.open(format=FORMAT,
                 channels=CHANNELS,
                 rate=RATE,
@@ -70,6 +157,19 @@ def audio_thread():
         try:
             data = stream.read(CHUNK, exception_on_overflow=False)
             buf = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+            
+            # Handle stereo vs mono
+            if CHANNELS == 2:
+                # Take only the first channel for mono processing
+                buf = buf[::2]  # Take every other sample (left channel)
+            elif CHANNELS > 2:
+                # Take first channel from multi-channel audio
+                buf = buf.reshape(-1, CHANNELS)[:, 0]
+                
+            # Ensure we have the expected number of samples
+            if len(buf) != CHUNK:
+                buf = np.resize(buf, CHUNK)
+                
             # Light centering; TX added DC offset, so remove mean
             buf -= np.mean(buf)
             audio_queue.put_nowait(buf)
@@ -143,7 +243,7 @@ def receiver_thread():
                     latest_y_by_i[i] = y.copy()
                 if Eq is not None and getattr(Eq, "size", 0) > 0:
                     latest_eqs[i] = Eq.copy()
-                    if i == 5:
+                    if i == cfg['lts_repetitions']:
                         latest_eq = Eq.copy()
                         eq_ready = True
                         try:
@@ -151,14 +251,19 @@ def receiver_thread():
                         except Exception:
                             vpos = None
         # If final equalizer has been seen, collect up to symbols_needed y-vectors (each of expected_sym_len)
-        # Exclude symbols from the last iteration (i >= N_IDX-1) to avoid including final/noise data
+        # Collect symbols from data frame processing phase (after LTS repetitions, but skip the transition iteration)
         if (eq_ready and (not symbols_collected) and isinstance(y, np.ndarray) and 
-            y.size == expected_sym_len and i < N_IDX-1):
+            y.size == expected_sym_len and i > cfg['lts_repetitions'] and 
+            i <= cfg['lts_repetitions'] + cfg['data_frame_length']):
             with eq_lock:
                 if len(collected_ys) < symbols_needed:
                     collected_ys.append(y.copy())
+                    print(f"Collected symbol {len(collected_ys)}/{symbols_needed} from iteration i={i} (y.size={y.size})")
                     if len(collected_ys) >= symbols_needed:
                         symbols_collected = True
+                        print(f"Finished collecting {symbols_needed} symbols")
+        elif eq_ready and isinstance(y, np.ndarray) and y.size != expected_sym_len:
+            print(f"Skipped i={i}: wrong y.size={y.size}, expected={expected_sym_len}")
 
         # then advance x1 for next iteration
         x1 = x2
@@ -227,24 +332,33 @@ try:
     fig_cons = plt.figure("Collected Constellation", figsize=(8, 8))
     ax_cons = fig_cons.add_subplot(111)
     if all_y.size > 0:
-        # Plot constellation points with raw values (no normalization)
-        real_vals = np.real(all_y)
-        imag_vals = np.imag(all_y)
+        # Filter out exactly 0+0j values before plotting
+        non_zero_mask = (all_y != 0+0j)
+        filtered_y = all_y[non_zero_mask]
         
-        # Print debug info about the raw constellation values
-        print(f"Raw constellation statistics:")
-        print(f"  Real: min={np.min(real_vals):.2f}, max={np.max(real_vals):.2f}, mean={np.mean(real_vals):.2f}")
-        print(f"  Imag: min={np.min(imag_vals):.2f}, max={np.max(imag_vals):.2f}, mean={np.mean(imag_vals):.2f}")
-        
-        ax_cons.scatter(real_vals, imag_vals, s=40, alpha=0.8, edgecolors='black', linewidth=0.5)
-        
-        # Set axis limits based on actual raw data range with some padding
-        real_range = np.max(real_vals) - np.min(real_vals)
-        imag_range = np.max(imag_vals) - np.min(imag_vals)
-        padding = max(real_range, imag_range) * 0.1
-        
-        ax_cons.set_xlim(np.min(real_vals) - padding, np.max(real_vals) + padding)
-        ax_cons.set_ylim(np.min(imag_vals) - padding, np.max(imag_vals) + padding)
+        if filtered_y.size > 0:
+            # Plot constellation points with raw values (no normalization)
+            real_vals = np.real(filtered_y)
+            imag_vals = np.imag(filtered_y)
+            
+            # Print debug info about the raw constellation values
+            print(f"Raw constellation statistics (filtered, {len(filtered_y)}/{len(all_y)} points):")
+            print(f"  Real: min={np.min(real_vals):.2f}, max={np.max(real_vals):.2f}, mean={np.mean(real_vals):.2f}")
+            print(f"  Imag: min={np.min(imag_vals):.2f}, max={np.max(imag_vals):.2f}, mean={np.mean(imag_vals):.2f}")
+            
+            ax_cons.scatter(real_vals, imag_vals, s=40, alpha=0.8, edgecolors='black', linewidth=0.5)
+            
+            # Set axis limits based on actual raw data range with some padding
+            real_range = np.max(real_vals) - np.min(real_vals)
+            imag_range = np.max(imag_vals) - np.min(imag_vals)
+            padding = max(real_range, imag_range) * 0.1
+            
+            ax_cons.set_xlim(np.min(real_vals) - padding, np.max(real_vals) + padding)
+            ax_cons.set_ylim(np.min(imag_vals) - padding, np.max(imag_vals) + padding)
+        else:
+            ax_cons.text(0.5, 0.5, "no data (all zeros filtered)", ha='center', va='center', transform=ax_cons.transAxes)
+            ax_cons.set_xlim(-2, 2)
+            ax_cons.set_ylim(-2, 2)
     else:
         ax_cons.text(0.5, 0.5, "no data", ha='center', va='center', transform=ax_cons.transAxes)
         ax_cons.set_xlim(-2, 2)

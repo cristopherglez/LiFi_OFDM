@@ -5,17 +5,17 @@ import scipy.io.wavfile as wav
 def get_config():
     # -------- System parameters (must match TX) --------
     Lfft = 128  # FFT length
-    cp_length = int(Lfft / 8)  # Cyclic prefix length
+    cp_length = int(Lfft / 16)  # Cyclic prefix length
     oversampling_factor = 10  # Note: parameter name in constructor
-    data_frame_length = 5
-    lts_repetitions = 5
+    data_frame_length = 5*2
+    lts_repetitions = 5*2
     sfo_repetitions = 3
 
     # -------- Load reference signals from WAV files --------
 
     # Load WAV files relative to this config file so the repo can be used on any OS
     base_dir = os.path.dirname(__file__)
-    sts_path = os.path.join(base_dir, 'DEFzc_sequence_256_lfft_times5_44100ksps.wav')
+    sts_path = os.path.join(base_dir, 'DEFzc_sequence_128_lfft_times10_44100ksps.wav')
     sts_sample_rate, sts_signal = wav.read(sts_path)
     # Ensure 1D array - if stereo, take first channel; if mono, flatten
     if sts_signal.ndim > 1:
@@ -24,7 +24,7 @@ def get_config():
         sts_no_cp = sts_signal.flatten().astype(np.int16)  # Ensure 1D
     print(f"Loaded STS signal with shape: {sts_no_cp.shape}")
     
-    lts_path = os.path.join(base_dir, 'DEFlts_256_lfft_times_5_44100ksps.wav')
+    lts_path = os.path.join(base_dir, 'DEFlts_128_lfft_times_12_44100ksps.wav')
     lts_sample_rate, lts_signal = wav.read(lts_path)
     # Ensure 1D array - if stereo, take first channel; if mono, flatten  
     if lts_signal.ndim > 1:
