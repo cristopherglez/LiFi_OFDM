@@ -36,6 +36,7 @@ class OFDMReceiver:
         self.sto_correction = -int((cp_length - 1)*oversampling_factor)
         self.minn_value = 0.0
         self.sto_counter = 0.0
+        self.manual_sto = -0.0
 
     def packet_detection(self, received_signal):
         """Detect packet start using cross-correlation with STS.
@@ -219,7 +220,7 @@ class OFDMReceiver:
             self.sto_frac_corr = 0
         if self.start_index + self.sto_int + self.sto_frac_corr < 0:
             self.start_index += int(self.sto_int) + self.sto_frac_corr + self.window_length
-            #print("ERROR: Start index negative after SFO correction, skipping symbol")
+            print("ERROR: Start index negative after SFO correction, skipping symbol")
             #print(f"New start index: {self.start_index}")
         else: 
             self.start_index += int(self.sto_int) + int(self.sto_frac_corr)
@@ -251,14 +252,18 @@ class OFDMReceiver:
                 bound_idx = self.start_index + int(self.Lfft*self.oversampling_factor)
                 end_idx = np.argmax(signal[(bound_idx - int((self.cp_length-1)*self.oversampling_factor)): bound_idx]) + (bound_idx - int((self.cp_length-1)*self.oversampling_factor))
                 chunk = signal[self.start_index : end_idx]
+                print(f"Length with SFO: {len(chunk)} samples")
+                self.sfo_deviation += len(chunk)/self.lts_repetitions
                 if self.i > 0:
                     #print(f"Adjusted start index for LTS processing: {self.start_index}")
                     self.sto_counter += self.start_index - old_idx
                     print(f"Offset applied to start index: {self.start_index - old_idx}")
                 if self.i == (self.lts_repetitions - 1):
-                    self.sto_correction = self.sto_counter / (self.lts_repetitions - 1)
+                    print(f"Estimated length with SFO: {self.sfo_deviation} samples")
+                    self.sto_correction = (self.sto_counter / (self.lts_repetitions - 1)) + (self.manual_sto)
+                    #self.sto_correction = ((self.Lfft*self.oversampling_factor) - self.sfo_deviation) * (1 + (self.cp_length/self.Lfft))
                     print(f"Samples offset per buffer: {self.sto_correction}")
-                    self.sto_int = int(self.sto_correction)
+                    self.sto_int = int(self.sto_correction) 
                     #print(f"Integer STO correction (samples): {self.sto_int}")
                     self.sto_frac = self.sto_correction - self.sto_int
                     #print(f"Fractional STO correction (samples): {self.sto_frac}")
@@ -274,7 +279,7 @@ class OFDMReceiver:
                 self.y = chunk_new
                 self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
-            elif(self.i >= self.lts_repetitions) and (self.i < self.data_frame_length + self.lts_repetitions):
+            elif(self.i >= self.lts_repetitions) and (self.i <= self.data_frame_length + self.lts_repetitions + 1):
                 #print(f"Data phase: i={self.i} (lts_reps={self.lts_repetitions}, data_len={self.data_frame_length})")
                 # Data frame processing    
                 # SFO corrections
@@ -286,7 +291,8 @@ class OFDMReceiver:
                     self.i += 1
                     return self.start_flag, self.start_index, self.y, self.i, self.Eq
                 else:
-                    chunk = self.interpolate_correction(signal)
+                    chunk = signal[self.start_index : self.start_index + int(self.sfo_deviation)]
+                    chunk = self.interpolate_correction_v2(chunk)
                     chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
                     # Process data frames
                     self.y = np.multiply(self.recover_dco_ofdm(chunk), np.conj(np.flip(self.Eq)))

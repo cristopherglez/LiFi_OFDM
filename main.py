@@ -43,13 +43,13 @@ running = True
 # Add equalizer state (thread-safe)
 import threading
 eq_lock = threading.Lock()
-# keep single latest snapshot per i = 0..19
-N_IDX = 17                        # show i = 0..19
-latest_eqs = [None] * N_IDX       # Eq per i
-latest_x1_by_i = [None] * N_IDX   # store last x1 (previous chunk) per i
-latest_x2_by_i = [None] * N_IDX   # store last x2 (current chunk) per i
-latest_start_by_i = [None] * N_IDX# store detected start_index relative to x2 per i
-latest_y_by_i = [None] * N_IDX    # store last y per i
+# Dynamic storage for all iterations (no hardcoded limit)
+latest_eqs = {}                   # Eq per i (dict for dynamic sizing)
+latest_x1_by_i = {}               # store last x1 (previous chunk) per i
+latest_x2_by_i = {}               # store last x2 (current chunk) per i
+latest_start_by_i = {}            # store detected start_index relative to x2 per i
+latest_y_by_i = {}                # store last y per i
+max_i_seen = -1                   # track highest iteration number seen
 # New: global list of detected start indices (use this for vertical lines)
 indexes = []                      # will be appended with start_index values (int)
 # keep for backward compatibility (optional)
@@ -189,7 +189,7 @@ def receiver_thread():
     global vpos
     global latest_symbols
     global latest_eqs, latest_y_by_i, latest_x1_by_i, latest_x2_by_i, latest_start_by_i, latest_eq, eq_ready
-    global collected_ys, symbols_collected, symbols_needed, indexes
+    global collected_ys, symbols_collected, symbols_needed, indexes, max_i_seen
     x1 = np.zeros(CHUNK, dtype=np.float32)
     MAX_SYM_WINDOW = 5000
     while running:
@@ -203,8 +203,11 @@ def receiver_thread():
         start_flag, start_index, y, i, Eq = receiver.process(x1, x2)
 
         # Capture latest x1, x2, start_index and y and Eq for this i (only when we have valid data)
-        if 0 <= i < N_IDX:
+        if i >= 0:
             with eq_lock:
+                # Track the maximum iteration seen
+                max_i_seen = max(max_i_seen, i)
+                
                 # Only store x1, x2 when we have a packet detection or valid processing
                 # This prevents storing noise when there's no signal
                 should_store_signal = (start_flag or 
@@ -229,14 +232,14 @@ def receiver_thread():
                         indexes.pop(0)
                     # store per-i for this specific iteration
                     latest_start_by_i[i] = int(start_index)
-                    # Only print for iterations 0 through 15
-                    if i <= 10:
+                    # Print for iterations 0 through 25
+                    if i <= 25:
                         print(f"Iteration i={i}: Detected start_index = {int(start_index)}")
                 elif start_flag:
                     # Still update even if start_index is not valid, for completeness
                     latest_start_by_i[i] = start_index
-                    # Only print for iterations 0 through 15
-                    if i <= 10:
+                    # Print for iterations 0 through 25
+                    if i <= 25:
                         print(f"Iteration i={i}: start_flag=True but start_index={start_index} (invalid)")
 
                 if isinstance(y, np.ndarray) and y.size > 0:
@@ -300,12 +303,12 @@ try:
     # copy collected y-vectors and other state under lock
     with eq_lock:
         ys_copy_list = [y.copy() for y in collected_ys] if len(collected_ys) > 0 else []
-        eqs_copy = [e.copy() if e is not None else None for e in latest_eqs]
+        eqs_copy = dict((k, v.copy() if v is not None else None) for k, v in latest_eqs.items())
         # build concatenated x1||x2 per i (no start/end arrays here)
-        xs_concat = []
-        for idx in range(N_IDX):
-            x1c = latest_x1_by_i[idx]
-            x2c = latest_x2_by_i[idx]
+        xs_concat = {}
+        for idx in latest_x1_by_i.keys() | latest_x2_by_i.keys():
+            x1c = latest_x1_by_i.get(idx)
+            x2c = latest_x2_by_i.get(idx)
             if isinstance(x1c, np.ndarray) and isinstance(x2c, np.ndarray):
                 concat = np.concatenate((x1c, x2c))
                 x1_len = len(x1c)
@@ -318,10 +321,11 @@ try:
             else:
                 concat = None
                 x1_len = 0
-            xs_concat.append(concat)
+            xs_concat[idx] = concat
         # copy the global indexes for plotting (may be empty)
         indexes_copy = list(indexes)
-        ys_last = [y.copy() if isinstance(y, np.ndarray) else None for y in latest_y_by_i]
+        ys_last = dict((k, v.copy() if isinstance(v, np.ndarray) else None) for k, v in latest_y_by_i.items())
+        max_i_copy = max_i_seen
 
     # Plot consolidated constellation of the 100 collected y-vectors (flattened)
     if len(ys_copy_list) > 0:
@@ -370,88 +374,120 @@ try:
     ax_cons.grid(True, alpha=0.3)
     ax_cons.set_aspect('equal')
 
-    # Figure 1: Equalizers (magitude dB + phase) stacked per i
-    fig_eq, axes_eq = plt.subplots(N_IDX, 1, figsize=(10, max(6, 0.6 * N_IDX)), num=f"Equalizers i=0..{N_IDX-1}")
-    for idx in range(N_IDX):
-        ax_eq = axes_eq[idx] if N_IDX > 1 else axes_eq
-        eq = eqs_copy[idx]
-        if eq is not None:
-            idxs = np.arange(len(eq))
-            mag_db = 20.0 * np.log10(np.abs(eq) + 1e-12)
-            phase = np.angle(eq)
-            ax_eq.plot(idxs, mag_db, '-o', markersize=3, color='C0', label='mag (dB)')
-            ax_eq.set_ylabel("Mag (dB)", color='C0')
-            ax_eq.tick_params(axis='y', colors='C0')
-            ax_phase = ax_eq.twinx()
-            ax_phase.plot(idxs, phase, '-', color='C1', label='phase (rad)')
-            ax_phase.set_ylabel("Phase (rad)", color='C1')
-            ax_phase.tick_params(axis='y', colors='C1')
-            # combine legends
-            lines, labels = ax_eq.get_legend_handles_labels()
-            lines2, labels2 = ax_phase.get_legend_handles_labels()
-            if lines or lines2:
-                ax_eq.legend(lines + lines2, labels + labels2, fontsize='small', loc='best')
-        else:
-            ax_eq.text(0.5, 0.5, "no EQ", ha='center', va='center', transform=ax_eq.transAxes)
-        ax_eq.set_title(f"i={idx} EQ")
-
-    # Figure 2: Signals (x1||x2 and y real/imag) stacked per i (two columns)
-    fig_sig, axes_sig = plt.subplots(N_IDX, 2, figsize=(12, max(6, 1.2 * N_IDX)), num=f"Signals i=0..{N_IDX-1}")
-    for idx in range(N_IDX):
-        ax_x1 = axes_sig[idx, 0] if N_IDX > 1 else axes_sig[0]
-        ax_y = axes_sig[idx, 1] if N_IDX > 1 else axes_sig[1]
-
-        xvals = xs_concat[idx]
-        if xvals is not None and getattr(xvals, "size", 0) > 0:
-            t = np.arange(len(xvals))
-            ax_x1.plot(t, xvals, '-', lw=1)
-            ax_x1.set_xlim(0, len(xvals) - 1)
+    # Create multiple figures for equalizers and signals, up to 10 iterations per window
+    if max_i_copy >= 0:
+        all_iterations = sorted([i for i in eqs_copy.keys() if i >= 0])
+        iterations_per_window = 10
+        
+        # Calculate number of windows needed
+        num_windows = (len(all_iterations) + iterations_per_window - 1) // iterations_per_window
+        
+        # Plot Equalizers in separate windows
+        for window_idx in range(num_windows):
+            start_i = window_idx * iterations_per_window
+            end_i = min(start_i + iterations_per_window, len(all_iterations))
+            window_iterations = all_iterations[start_i:end_i]
             
-            # Plot vertical line for start index detected for this specific iteration (idx)
-            x1_len = len(latest_x1_by_i[idx]) if isinstance(latest_x1_by_i[idx], np.ndarray) else 0
+            if not window_iterations:
+                continue
+                
+            fig_eq, axes_eq = plt.subplots(len(window_iterations), 1, 
+                                         figsize=(10, max(6, 0.6 * len(window_iterations))), 
+                                         num=f"Equalizers Window {window_idx + 1} (i={window_iterations[0]}..{window_iterations[-1]})")
             
-            # First, plot the specific start index for this iteration if available
-            start_idx_for_this_i = latest_start_by_i[idx]
-            if start_idx_for_this_i is not None and isinstance(start_idx_for_this_i, (int, np.integer)):
-                pos = int(start_idx_for_this_i)
-                if 0 <= pos < len(xvals):
-                    ax_x1.axvline(pos, color='red', linestyle='-', linewidth=2.5, alpha=0.8, 
-                                 label=f'Start idx={start_idx_for_this_i}', zorder=20)
+            for plot_idx, i in enumerate(window_iterations):
+                ax_eq = axes_eq[plot_idx] if len(window_iterations) > 1 else axes_eq
+                eq = eqs_copy.get(i)
+                if eq is not None:
+                    idxs = np.arange(len(eq))
+                    mag_db = 20.0 * np.log10(np.abs(eq) + 1e-12)
+                    phase = np.angle(eq)
+                    ax_eq.plot(idxs, mag_db, '-o', markersize=3, color='C0', label='mag (dB)')
+                    ax_eq.set_ylabel("Mag (dB)", color='C0')
+                    ax_eq.tick_params(axis='y', colors='C0')
+                    ax_phase = ax_eq.twinx()
+                    ax_phase.plot(idxs, phase, '-', color='C1', label='phase (rad)')
+                    ax_phase.set_ylabel("Phase (rad)", color='C1')
+                    ax_phase.tick_params(axis='y', colors='C1')
+                    # combine legends
+                    lines, labels = ax_eq.get_legend_handles_labels()
+                    lines2, labels2 = ax_phase.get_legend_handles_labels()
+                    if lines or lines2:
+                        ax_eq.legend(lines + lines2, labels + labels2, fontsize='small', loc='best')
+                else:
+                    ax_eq.text(0.5, 0.5, "no EQ", ha='center', va='center', transform=ax_eq.transAxes)
+                ax_eq.set_title(f"i={i} EQ")
             
-            # Also draw recent start indices from all iterations for context (lighter)
-            MAX_LINES = 10
-            for line_num, s in enumerate(indexes_copy[-MAX_LINES:]):  # Last 10 detections
-                if not isinstance(s, (int, np.integer)):
-                    continue
-                pos = x1_len + int(s)
-                if pos < 0 or pos >= len(xvals):
-                    continue
-                # Make older lines more transparent
-                alpha_val = 0.1 + 0.3 * (line_num / max(1, MAX_LINES - 1))
-                ax_x1.axvline(pos, color='orange', linestyle='--', linewidth=1.0, 
-                             alpha=alpha_val, zorder=10)
-            
-            # Add legend if there's a main start line
-            if start_idx_for_this_i is not None:
-                ax_x1.legend(fontsize='small', loc='upper right')
-        else:
-            ax_x1.text(0.5, 0.5, "no x1||x2", ha='center', va='center', transform=ax_x1.transAxes)
-        ax_x1.set_title(f"i={idx} x1||x2")
-        ax_x1.set_xlabel("sample")
-        ax_x1.set_ylabel("amp")
+            plt.tight_layout()
 
-        yvals = ys_last[idx]
-        if yvals is not None and getattr(yvals, "size", 0) > 0:
-            t_y = np.arange(len(yvals))
-            ax_y.plot(t_y, np.real(yvals), '-', linewidth=1)
-            ax_y.plot(t_y, np.imag(yvals), '-', linewidth=1)
-            ax_y.set_xlabel("sample")
-            ax_y.set_ylabel("value")
-        else:
-            ax_y.text(0.5, 0.5, "no y", ha='center', va='center', transform=ax_y.transAxes)
-        ax_y.set_title(f"i={idx} y (real / imag)")
+        # Plot Signals in separate windows  
+        for window_idx in range(num_windows):
+            start_i = window_idx * iterations_per_window
+            end_i = min(start_i + iterations_per_window, len(all_iterations))
+            window_iterations = all_iterations[start_i:end_i]
+            
+            if not window_iterations:
+                continue
+                
+            fig_sig, axes_sig = plt.subplots(len(window_iterations), 2, 
+                                           figsize=(12, max(6, 1.2 * len(window_iterations))), 
+                                           num=f"Signals Window {window_idx + 1} (i={window_iterations[0]}..{window_iterations[-1]})")
+            
+            for plot_idx, i in enumerate(window_iterations):
+                ax_x1 = axes_sig[plot_idx, 0] if len(window_iterations) > 1 else axes_sig[0]
+                ax_y = axes_sig[plot_idx, 1] if len(window_iterations) > 1 else axes_sig[1]
 
-    plt.tight_layout()
+                xvals = xs_concat.get(i)
+                if xvals is not None and getattr(xvals, "size", 0) > 0:
+                    t = np.arange(len(xvals))
+                    ax_x1.plot(t, xvals, '-', lw=1)
+                    ax_x1.set_xlim(0, len(xvals) - 1)
+                    
+                    # Plot vertical line for start index detected for this specific iteration (i)
+                    x1_len = len(latest_x1_by_i.get(i, [])) if isinstance(latest_x1_by_i.get(i), np.ndarray) else 0
+                    
+                    # First, plot the specific start index for this iteration if available
+                    start_idx_for_this_i = latest_start_by_i.get(i)
+                    if start_idx_for_this_i is not None and isinstance(start_idx_for_this_i, (int, np.integer)):
+                        pos = int(start_idx_for_this_i)
+                        if 0 <= pos < len(xvals):
+                            ax_x1.axvline(pos, color='red', linestyle='-', linewidth=2.5, alpha=0.8, 
+                                         label=f'Start idx={start_idx_for_this_i}', zorder=20)
+                    
+                    # Also draw recent start indices from all iterations for context (lighter)
+                    MAX_LINES = 10
+                    for line_num, s in enumerate(indexes_copy[-MAX_LINES:]):  # Last 10 detections
+                        if not isinstance(s, (int, np.integer)):
+                            continue
+                        pos = x1_len + int(s)
+                        if pos < 0 or pos >= len(xvals):
+                            continue
+                        # Make older lines more transparent
+                        alpha_val = 0.1 + 0.3 * (line_num / max(1, MAX_LINES - 1))
+                        ax_x1.axvline(pos, color='orange', linestyle='--', linewidth=1.0, 
+                                     alpha=alpha_val, zorder=10)
+                    
+                    # Add legend if there's a main start line
+                    if start_idx_for_this_i is not None:
+                        ax_x1.legend(fontsize='small', loc='upper right')
+                else:
+                    ax_x1.text(0.5, 0.5, "no x1||x2", ha='center', va='center', transform=ax_x1.transAxes)
+                ax_x1.set_title(f"i={i} x1||x2")
+                ax_x1.set_xlabel("sample")
+                ax_x1.set_ylabel("amp")
+
+                yvals = ys_last.get(i)
+                if yvals is not None and getattr(yvals, "size", 0) > 0:
+                    t_y = np.arange(len(yvals))
+                    ax_y.plot(t_y, np.real(yvals), '-', linewidth=1)
+                    ax_y.plot(t_y, np.imag(yvals), '-', linewidth=1)
+                    ax_y.set_xlabel("sample")
+                    ax_y.set_ylabel("value")
+                else:
+                    ax_y.text(0.5, 0.5, "no y", ha='center', va='center', transform=ax_y.transAxes)
+                ax_y.set_title(f"i={i} y (real / imag)")
+            
+            plt.tight_layout()
     plt.show()
 
 finally:
