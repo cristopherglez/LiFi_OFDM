@@ -36,7 +36,7 @@ class OFDMReceiver:
         self.sto_correction = -int((cp_length - 1)*oversampling_factor)
         self.minn_value = 0.0
         self.sto_counter = 0.0
-        self.manual_sto = -0.0
+        self.manual_sto = 0.1
 
     def packet_detection(self, received_signal):
         """Detect packet start using cross-correlation with STS.
@@ -260,8 +260,8 @@ class OFDMReceiver:
                     print(f"Offset applied to start index: {self.start_index - old_idx}")
                 if self.i == (self.lts_repetitions - 1):
                     print(f"Estimated length with SFO: {self.sfo_deviation} samples")
-                    self.sto_correction = (self.sto_counter / (self.lts_repetitions - 1)) + (self.manual_sto)
-                    #self.sto_correction = ((self.Lfft*self.oversampling_factor) - self.sfo_deviation) * (1 + (self.cp_length/self.Lfft))
+                    self.sto_correction = (self.sto_counter / (self.lts_repetitions - 1)) #+ (self.manual_sto)
+                    #self.sto_correction = -1.25
                     print(f"Samples offset per buffer: {self.sto_correction}")
                     self.sto_int = int(self.sto_correction) 
                     #print(f"Integer STO correction (samples): {self.sto_int}")
@@ -271,9 +271,10 @@ class OFDMReceiver:
                     #print(f"Final STO correction after LTS processing: {self.sto_int + self.sto_frac}")
                 chunk_new = self.interpolate_correction_v2(chunk)
                 #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
-                self.Eq += self.channel_estimation_ls(chunk_new)
+                if self.i > 2:
+                    self.Eq += self.channel_estimation_ls(chunk_new)
                 # Finalize LTS estimation
-                self.Eq /= self.lts_repetitions-1
+                self.Eq /= self.lts_repetitions-3
                 #self.Eq = np.ones(self.Nsub, dtype=complex)  # TEMPORARY SET TO ONES FOR TESTING
                 #print(f"Final channel equalizer Eq computed.")
                 self.y = chunk_new
@@ -302,7 +303,8 @@ class OFDMReceiver:
                     self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             else:
-                #print(f"Final else: i={self.i}, returning zeros")
+                if self.i == self.data_frame_length + self.lts_repetitions + 2:
+                    print(f"End of packet, returning zeros at i={self.i}")
                 self.i += 1
                 self.y = np.zeros(self.Lfft//2-1, dtype=complex)
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq

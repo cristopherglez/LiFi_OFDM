@@ -327,38 +327,61 @@ try:
         ys_last = dict((k, v.copy() if isinstance(v, np.ndarray) else None) for k, v in latest_y_by_i.items())
         max_i_copy = max_i_seen
 
-    # Plot consolidated constellation of the 100 collected y-vectors (flattened)
-    if len(ys_copy_list) > 0:
-        all_y = np.concatenate(ys_copy_list)
-    else:
-        all_y = np.array([], dtype=complex)
-
+    # Plot constellation with different colors for each iteration
     fig_cons = plt.figure("Collected Constellation", figsize=(8, 8))
     ax_cons = fig_cons.add_subplot(111)
-    if all_y.size > 0:
-        # Filter out exactly 0+0j values before plotting
-        non_zero_mask = (all_y != 0+0j)
-        filtered_y = all_y[non_zero_mask]
+    
+    if len(ys_copy_list) > 0:
+        # Define a color map for different iterations using blue tones
+        import matplotlib.cm as cm
+        colors = plt.cm.Blues(np.linspace(0.3, 1.0, len(ys_copy_list)))  # Use Blues colormap from light to dark blue
         
-        if filtered_y.size > 0:
-            # Plot constellation points with raw values (no normalization)
-            real_vals = np.real(filtered_y)
-            imag_vals = np.imag(filtered_y)
+        all_real_vals = []
+        all_imag_vals = []
+        
+        # Plot each iteration's symbols with different colors
+        for iteration_idx, y_data in enumerate(ys_copy_list):
+            # Filter out exactly 0+0j values before plotting
+            non_zero_mask = (y_data != 0+0j)
+            filtered_y = y_data[non_zero_mask]
             
+            if filtered_y.size > 0:
+                real_vals = np.real(filtered_y)
+                imag_vals = np.imag(filtered_y)
+                
+                # Keep track of all values for axis limits
+                all_real_vals.extend(real_vals)
+                all_imag_vals.extend(imag_vals)
+                
+                # Plot with different color for each iteration
+                ax_cons.scatter(real_vals, imag_vals, s=40, alpha=0.7, 
+                              c=[colors[iteration_idx]], edgecolors='black', linewidth=0.3,
+                              label=f'Iteration {iteration_idx + 1}')
+        
+        if all_real_vals and all_imag_vals:
             # Print debug info about the raw constellation values
-            print(f"Raw constellation statistics (filtered, {len(filtered_y)}/{len(all_y)} points):")
-            print(f"  Real: min={np.min(real_vals):.2f}, max={np.max(real_vals):.2f}, mean={np.mean(real_vals):.2f}")
-            print(f"  Imag: min={np.min(imag_vals):.2f}, max={np.max(imag_vals):.2f}, mean={np.mean(imag_vals):.2f}")
-            
-            ax_cons.scatter(real_vals, imag_vals, s=40, alpha=0.8, edgecolors='black', linewidth=0.5)
+            print(f"Raw constellation statistics ({len(all_real_vals)} total points across {len(ys_copy_list)} iterations):")
+            print(f"  Real: min={np.min(all_real_vals):.2f}, max={np.max(all_real_vals):.2f}, mean={np.mean(all_real_vals):.2f}")
+            print(f"  Imag: min={np.min(all_imag_vals):.2f}, max={np.max(all_imag_vals):.2f}, mean={np.mean(all_imag_vals):.2f}")
             
             # Set axis limits based on actual raw data range with some padding
-            real_range = np.max(real_vals) - np.min(real_vals)
-            imag_range = np.max(imag_vals) - np.min(imag_vals)
+            real_range = np.max(all_real_vals) - np.min(all_real_vals)
+            imag_range = np.max(all_imag_vals) - np.min(all_imag_vals)
             padding = max(real_range, imag_range) * 0.1
             
-            ax_cons.set_xlim(np.min(real_vals) - padding, np.max(real_vals) + padding)
-            ax_cons.set_ylim(np.min(imag_vals) - padding, np.max(imag_vals) + padding)
+            ax_cons.set_xlim(np.min(all_real_vals) - padding, np.max(all_real_vals) + padding)
+            ax_cons.set_ylim(np.min(all_imag_vals) - padding, np.max(all_imag_vals) + padding)
+            
+            # Add legend if we have multiple iterations (limit legend entries to avoid clutter)
+            if len(ys_copy_list) > 1:
+                if len(ys_copy_list) <= 10:
+                    ax_cons.legend(fontsize='small', loc='upper right')
+                else:
+                    # For many iterations, just show first and last in legend
+                    handles, labels = ax_cons.get_legend_handles_labels()
+                    selected_handles = [handles[0], handles[-1]] if len(handles) >= 2 else handles
+                    selected_labels = [labels[0], labels[-1]] if len(labels) >= 2 else labels
+                    ax_cons.legend(selected_handles, selected_labels, fontsize='small', loc='upper right')
         else:
             ax_cons.text(0.5, 0.5, "no data (all zeros filtered)", ha='center', va='center', transform=ax_cons.transAxes)
             ax_cons.set_xlim(-2, 2)
@@ -368,7 +391,7 @@ try:
         ax_cons.set_xlim(-2, 2)
         ax_cons.set_ylim(-2, 2)
     
-    ax_cons.set_title(f"Collected {len(ys_copy_list)} y-vectors ({len(all_y)} symbols)")
+    ax_cons.set_title(f"Constellation by Iteration ({len(ys_copy_list)} iterations, {sum(len(y) for y in ys_copy_list)} total symbols)")
     ax_cons.set_xlabel("In-phase")
     ax_cons.set_ylabel("Quadrature")
     ax_cons.grid(True, alpha=0.3)
@@ -453,6 +476,11 @@ try:
                         if 0 <= pos < len(xvals):
                             ax_x1.axvline(pos, color='red', linestyle='-', linewidth=2.5, alpha=0.8, 
                                          label=f'Start idx={start_idx_for_this_i}', zorder=20)
+                            #Plot a second line at lfft*oversampling_factor after start index
+                            second_pos = pos + receiver.Lfft * receiver.oversampling_factor
+                            if 0 <= second_pos < len(xvals):
+                                ax_x1.axvline(second_pos, color='orange', linestyle='--', linewidth=2.0, alpha=0.7, 
+                                             label=f'Start+Lfft*OSF', zorder=15)
                     
                     # Also draw recent start indices from all iterations for context (lighter)
                     MAX_LINES = 10
@@ -464,7 +492,7 @@ try:
                             continue
                         # Make older lines more transparent
                         alpha_val = 0.1 + 0.3 * (line_num / max(1, MAX_LINES - 1))
-                        ax_x1.axvline(pos, color='orange', linestyle='--', linewidth=1.0, 
+                        ax_x1.axvline(pos, color='purple', linestyle='--', linewidth=1.0, 
                                      alpha=alpha_val, zorder=10)
                     
                     # Add legend if there's a main start line
