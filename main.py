@@ -8,6 +8,8 @@ import matplotlib.animation as animation
 from config import get_config
 from vlc_receiver import OFDMReceiver
 
+
+
 # -------- Load config & init receiver --------
 cfg = get_config()
 RATE = 44100
@@ -200,7 +202,7 @@ def receiver_thread():
             continue
 
         # process uses current x1 (previous chunk) and current x2
-        start_flag, start_index, y, i, Eq = receiver.process(x1, x2)
+        start_flag, start_index, y, i, Eq = receiver.process_zc(x1, x2)
 
         # Capture latest x1, x2, start_index and y and Eq for this i (only when we have valid data)
         if i >= 0:

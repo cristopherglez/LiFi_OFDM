@@ -87,14 +87,31 @@ class OFDMReceiver:
         data_ask = np.conj(np.flip(data))
         new_data = np.concatenate((data, data_ask))
         #print(f"Data length: {len(new_data)}")"""
-        data[1:] = 1 + 0j 
+        #data[1:] = 1 + 0j
+        zc_data = self.generate_complex_zc(61)
+        data[1:] = zc_data
         #X = np.fft.fft(np.real(self.lts_no_cp), n=self.Lfft)[1:self.Nsub+1]
         #X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
         spectrum = np.zeros(self.Nsub + 1, dtype=complex)
         spectrum[1:] = self.recover_dco_ofdm(received_symbol_no_cp)
         Eq = spectrum[1:]/data[1:]
+        Eq *= 1/data[1:]
         ##print(f"Eq length: {len(Eq)}")
         return Eq
+        
+    def generate_complex_zc(self, u: int):
+        """
+        Genera una secuencia de Zadoff-Chu con índice raíz u y longitud Nzc, repetida.
+        
+        Entradas:
+        - u: Índice raíz de la secuencia Zadoff-Chu.
+        - Nzc: Longitud de la secuencia Zadoff-Chu.
+        Salida:
+        - zc_sequence: Secuencia Zadoff-Chu compleja.
+        """
+        n = np.arange(self.Nsub)
+        zc_sequence = np.exp(-1j * np.pi * u * n * (n + 1) / self.Nsub)
+        return zc_sequence
 
     def recover_dco_ofdm(self, input_symbol_no_cp):
         decimated_input = []
@@ -229,7 +246,8 @@ class OFDMReceiver:
     def interpolate_correction(self, signal):
         real_length = (self.Lfft * self.oversampling_factor)
         length_with_sfo =  real_length + self.sto_correction
-        chunk = signal[self.start_index : self.start_index + int(length_with_sfo)]
+        end_idx = self.start_index + (self.Lfft*self.oversampling_factor) + self.sto_int
+        chunk = signal[self.start_index : end_idx]
         chunk = np.interp(np.linspace(0, len(chunk), int(real_length), endpoint=False),
                               np.arange(len(chunk)), chunk)
         return chunk
@@ -239,6 +257,76 @@ class OFDMReceiver:
         chunk = np.interp(np.linspace(0, len(chunk), int(real_length), endpoint=False),
                               np.arange(len(chunk)), chunk)
         return chunk
+
+    def process_zc(self, x1, x2):
+        signal = np.concatenate([x1, x2]) 
+        if not self.start_flag: # Perform packet detection, coarse sync
+            self.start_flag, self.start_index, _, _ = self.packet_detection(signal)
+        else: 
+            if self.i >= 0 and self.i < (self.lts_repetitions): 
+                # Channel estimations, fine sync, sto, sfo estimation
+                old_idx = self.start_index
+                if self.i >= 1:
+                    self.start_index = np.argmax(np.absolute(correlate(signal, self.sts_no_cp, mode='valid')[:self.Lfft*self.oversampling_factor])) 
+                self.sto_correction += old_idx - self.start_index
+                chunk = signal[self.start_index : self.start_index + self.Lfft*self.oversampling_factor]
+                #print(f"Length with SFO: {len(chunk)} samples")
+                #self.sfo_deviation += len(chunk)/self.lts_repetitions
+                if self.i > 0:
+                    #print(f"Adjusted start index for LTS processing: {self.start_index}")
+                    self.sto_counter += self.start_index - old_idx
+                    print(f"Offset applied to start index: {self.start_index - old_idx}")
+                if self.i == (self.lts_repetitions - 1):
+                    print(f"Estimated length with SFO: {self.sfo_deviation} samples")
+                    self.sto_correction = (self.sto_counter / (self.lts_repetitions)) #+ (self.manual_sto)
+                    #self.sto_correction = -1.25
+                    print(f"Samples offset per buffer: {self.sto_correction}")
+                    self.sto_int = int(self.sto_correction)
+                    #print(f"Integer STO correction (samples): {self.sto_int}")
+                    self.sto_frac = self.sto_correction - self.sto_int
+                    #print(f"Fractional STO correction (samples): {self.sto_frac}")
+                    self.sto_frac_corr = 0
+                    #print(f"Final STO correction after LTS processing: {self.sto_int + self.sto_frac}")
+                #chunk_new = self.interpolate_correction(chunk)
+                #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                if self.i > 0:
+                    self.Eq += self.channel_estimation_ls(chunk)
+                # Finalize LTS estimation
+                self.Eq /= self.lts_repetitions - 1
+                #self.Eq = np.ones(self.Nsub, dtype=complex)  # TEMPORARY SET TO ONES FOR TESTING
+                #print(f"Final channel equalizer Eq computed.")
+                self.y = correlate(signal, self.sts_no_cp, mode='valid')
+                self.i += 1
+                return self.start_flag, self.start_index, self.y, self.i, self.Eq
+            elif(self.i >= self.lts_repetitions) and (self.i < self.data_frame_length + self.lts_repetitions):
+                #print(f"Data phase: i={self.i} (lts_reps={self.lts_repetitions}, data_len={self.data_frame_length})")
+                # Data frame processing    
+                # SFO corrections
+                self.index_correction()
+                # Correct interpolating
+                if self.start_index + self.Lfft * self.oversampling_factor > len(signal)*(1 - self.normalized_sfo):
+                    #print(f"Not enough samples: need {self.start_index + self.Lfft * self.oversampling_factor}, have {len(signal)}")
+                    #print("Aumenting i on if succesful")
+                    self.i += 1
+                    return self.start_flag, self.start_index, self.y, self.i, self.Eq
+                else:
+                    #chunk = signal[self.start_index : self.start_index + int(self.sfo_deviation)]
+                    #chunk = self.interpolate_correction(chunk)
+                    chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                    # Process data frames
+                    #self.y = np.multiply(self.recover_dco_ofdm(chunk), np.conj(np.flip(self.Eq)))
+                    self.y = self.recover_dco_ofdm(chunk) * self.Eq
+                    #print(f"Processed data frame: y.size={self.y.size}")
+                    #print("Aumenting i on else succesful")
+                    self.i += 1
+                return self.start_flag, self.start_index, self.y, self.i, self.Eq
+            else:
+                if self.i == self.data_frame_length + self.lts_repetitions :
+                    print(f"End of packet, returning zeros at i={self.i}")
+                self.i += 1
+                self.y = np.zeros(self.Lfft//2-1, dtype=complex)
+                return self.start_flag, self.start_index, self.y, self.i, self.Eq
+        return self.start_flag, self.start_index, self.y, self.i, self.Eq
 
     def process(self, x1, x2):
         signal = np.concatenate([x1, x2]) 
