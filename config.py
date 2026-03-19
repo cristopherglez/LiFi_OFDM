@@ -5,9 +5,9 @@ import scipy.io.wavfile as wav
 def get_config():
     # -------- System parameters (must match TX) --------
     Lfft = 128  # FFT length
-    cp_length = int(Lfft / 16)  # Cyclic prefix length
+    cp_length = 16 # Cyclic prefix length
     oversampling_factor = 10  # Note: parameter name in constructor
-    data_frame_length = 5
+    data_frame_length = 29
     lts_repetitions = 9
     sfo_repetitions = 3
 
@@ -15,7 +15,7 @@ def get_config():
 
     # Load WAV files relative to this config file so the repo can be used on any OS
     base_dir = os.path.dirname(__file__)
-    sts_path = os.path.join(base_dir, '/home/cris/Documents/Python/LiFi_OFDM/hermitian_zc_sequence_128_lfft_times10_44100ksps.wav')
+    sts_path = os.path.join(base_dir, '/home/cris/github_repos/cristopherglez/LiFi_OFDM/hermitian_zc_sequence_128_lfft_times10_44100ksps.wav')
     sts_sample_rate, sts_signal = wav.read(sts_path)
     # Ensure 1D array - if stereo, take first channel; if mono, flatten
     if sts_signal.ndim > 1:

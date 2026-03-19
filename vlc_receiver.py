@@ -94,8 +94,8 @@ class OFDMReceiver:
         #X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
         spectrum = np.zeros(self.Nsub + 1, dtype=complex)
         spectrum[1:] = self.recover_dco_ofdm(received_symbol_no_cp)
+        #Eq = data[1:]/spectrum[1:]
         Eq = spectrum[1:]/data[1:]
-        Eq *= 1/data[1:]
         ##print(f"Eq length: {len(Eq)}")
         return Eq
         
@@ -293,6 +293,7 @@ class OFDMReceiver:
                     self.Eq += self.channel_estimation_ls(chunk)
                 # Finalize LTS estimation
                 self.Eq /= self.lts_repetitions - 1
+                #self.Eq /= self.generate_complex_zc(61)
                 #self.Eq = np.ones(self.Nsub, dtype=complex)  # TEMPORARY SET TO ONES FOR TESTING
                 #print(f"Final channel equalizer Eq computed.")
                 self.y = correlate(signal, self.sts_no_cp, mode='valid')
@@ -312,10 +313,22 @@ class OFDMReceiver:
                 else:
                     #chunk = signal[self.start_index : self.start_index + int(self.sfo_deviation)]
                     #chunk = self.interpolate_correction(chunk)
-                    chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
+                    chunk = signal[self.start_index - 40: self.start_index + self.Lfft * self.oversampling_factor - 40]
                     # Process data frames
                     #self.y = np.multiply(self.recover_dco_ofdm(chunk), np.conj(np.flip(self.Eq)))
                     self.y = self.recover_dco_ofdm(chunk) * self.Eq
+                    pilot_tones_indexes = [0, 13, 25, 38, 50, 62]
+                    #pilot_tones_indexes = np.arange(0, 62)
+                    # Check pilot tones
+                    pilot_values = self.y[pilot_tones_indexes]
+                    angles = np.angle(pilot_values)
+                    unwrapped_angles = np.unwrap(angles)
+                    display_vector = np.zeros_like(self.y)
+                    # Interpolate to find the phase correction for all subcarriers
+                    display_vector = np.interp(np.arange(len(self.y)), pilot_tones_indexes, unwrapped_angles)
+                    #Now correct the symbols with the interpolated phase correction
+                    self.y = self.y * np.exp(-1j * display_vector)
+                    #self.y = display_vector
                     #print(f"Processed data frame: y.size={self.y.size}")
                     #print("Aumenting i on else succesful")
                     self.i += 1
