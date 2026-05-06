@@ -7,9 +7,8 @@ def get_config():
     Lfft = 128  # FFT length
     cp_length = 16 # Cyclic prefix length
     oversampling_factor = 10  # Note: parameter name in constructor
-    data_frame_length = 20
+    data_frame_length = 19
     lts_repetitions = 9
-    sfo_repetitions = 3
 
     # -------- Load reference signals from WAV files --------
 
@@ -38,7 +37,6 @@ def get_config():
         'cp_length': cp_length,
         'data_frame_length': data_frame_length,
         'lts_repetitions': lts_repetitions,
-        'sfo_repetitions': sfo_repetitions,
         'sts_no_cp': sts_no_cp,
         'lts_no_cp': lts_no_cp,
         'oversampling_factor': oversampling_factor,

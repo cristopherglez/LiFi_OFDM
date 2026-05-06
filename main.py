@@ -8,8 +8,6 @@ import matplotlib.animation as animation
 from config import get_config
 from vlc_receiver import OFDMReceiver
 
-
-
 # -------- Load config & init receiver --------
 cfg = get_config()
 RATE = 44100

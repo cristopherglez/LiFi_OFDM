@@ -2,7 +2,7 @@ import numpy as np
 from scipy.signal import correlate
 
 class OFDMReceiver:
-    def __init__(self, Lfft, cp_length, data_frame_length, lts_repetitions, sfo_repetitions,
+    def __init__(self, Lfft, cp_length, data_frame_length, lts_repetitions,
                  sts_no_cp, lts_no_cp, oversampling_factor=1):
         # System
         self.oversampling_factor = oversampling_factor
@@ -13,7 +13,6 @@ class OFDMReceiver:
         self.window_length = self.full_symbol_length * oversampling_factor
         self.data_frame_length = data_frame_length
         self.lts_repetitions = lts_repetitions
-        self.sfo_repetitions = sfo_repetitions
 
         # References
         self.sts_no_cp = sts_no_cp
@@ -26,17 +25,11 @@ class OFDMReceiver:
         self.start_flag = False
         self.start_index = 0
         self.i = 0
-        self.sfo = 0
-        self.normalized_sfo = 0
-        self.sto=0.0
         self.sto_acc=0.0
         self.Eq = np.zeros(self.Nsub, dtype=complex)
         self.y = np.array([], dtype=complex)
-        self.sfo_deviation = 0.0
         self.sto_correction = -int((cp_length - 1)*oversampling_factor)
-        self.minn_value = 0.0
         self.sto_counter = 0.0
-        self.manual_sto = 0.1
 
     def packet_detection(self, received_signal):
         """Detect packet start using cross-correlation with STS.
@@ -53,7 +46,6 @@ class OFDMReceiver:
         # Compute auto-correlation of known STS
         sts_auto_corr = correlate(sts_norm, sts_norm, mode='full')
         threshold = 0.25 * np.max(np.abs(sts_auto_corr))
-        
 
         # Compute normalized cross-correlation
         correlation_values = correlate(signal_norm, sts_norm, mode='valid')
@@ -114,12 +106,12 @@ class OFDMReceiver:
         return zc_sequence
 
     def recover_dco_ofdm(self, input_symbol_no_cp):
-        decimated_input = []
+        input = []
         for i in range(0, self.Lfft):
-            new_index = int(i*self.oversampling_factor*(1+self.normalized_sfo))
-            decimated_input.append(input_symbol_no_cp[new_index])
-        #print(f"Decimated input length: {len(decimated_input)}")
-        data = np.fft.fft(decimated_input)[1:self.Nsub+1]
+            new_index = int(i*self.oversampling_factor)
+            input.append(input_symbol_no_cp[new_index])
+        #print(f"Decimated input length: {len(input)}")
+        data = np.fft.fft(input)[1:self.Nsub+1]
         return data
     
     def qpsk_demod(self, symbols):
@@ -175,7 +167,7 @@ class OFDMReceiver:
             self.sto_frac_corr = 0
         if self.start_index + self.sto_int + self.sto_frac_corr < 0:
             self.start_index += int(self.sto_int) + self.sto_frac_corr + self.window_length
-            print("ERROR: Start index negative after SFO correction, skipping symbol")
+            print("ERROR: Start index negative after SFO correction")
             #print(f"New start index: {self.start_index}")
         else: 
             self.start_index += int(self.sto_int) + int(self.sto_frac_corr)
@@ -192,81 +184,62 @@ class OFDMReceiver:
 
     def process_zc(self, x1, x2):
         signal = np.concatenate([x1, x2]) 
-        if not self.start_flag: # Perform packet detection, coarse sync
+        if not self.start_flag: 
+            # Perform packet detection, coarse sync
             self.start_flag, self.start_index, _, _ = self.packet_detection(signal)
         else: 
             if self.i >= 0 and self.i < (self.lts_repetitions): 
-                # Channel estimations, fine sync, sto, sfo estimation
+                # Periodic STO estimation (SFO estimation)
                 old_idx = self.start_index
                 if self.i >= 1:
                     self.start_index = np.argmax(np.absolute(correlate(signal, self.sts_no_cp, mode='valid')[:self.Lfft*self.oversampling_factor])) 
                 self.sto_correction += old_idx - self.start_index
                 chunk = signal[self.start_index : self.start_index + self.Lfft*self.oversampling_factor]
-                #print(f"Length with SFO: {len(chunk)} samples")
-                #self.sfo_deviation += len(chunk)/self.lts_repetitions
                 if self.i > 0:
                     #print(f"Adjusted start index for LTS processing: {self.start_index}")
                     self.sto_counter += self.start_index - old_idx
-                    print(f"Offset applied to start index: {self.start_index - old_idx}")
+                    #print(f"Offset applied to start index: {self.start_index - old_idx}")
                 if self.i == (self.lts_repetitions - 1):
-                    print(f"Estimated length with SFO: {self.sfo_deviation} samples")
-                    self.sto_correction = (self.sto_counter / (self.lts_repetitions)) #+ (self.manual_sto)
+                    self.sto_correction = (self.sto_counter / (self.lts_repetitions))
                     #self.sto_correction = -1.25
-                    print(f"Samples offset per buffer: {self.sto_correction}")
+                    #print(f"Samples offset per buffer: {self.sto_correction}")
                     self.sto_int = int(self.sto_correction)
                     #print(f"Integer STO correction (samples): {self.sto_int}")
                     self.sto_frac = self.sto_correction - self.sto_int
                     #print(f"Fractional STO correction (samples): {self.sto_frac}")
-                    self.sto_frac_corr = 0
+                    self.sto_frac_corr = 0 # Initialize fractional correction accumulator
                     #print(f"Final STO correction after LTS processing: {self.sto_int + self.sto_frac}")
-                #chunk_new = self.interpolate_correction(chunk)
-                #chunk = signal[self.start_index : self.start_index + self.Lfft * self.oversampling_factor]
                 if self.i > 0:
+                    # Channel response estimation
                     self.Eq += self.channel_estimation_ls(chunk)
                 # Finalize LTS estimation
                 self.Eq /= self.lts_repetitions - 1
-                #self.Eq /= self.generate_complex_zc(61)
+                #self.Eq /= self.generate_complex_zc(61) # TEMPORARY SET TO ZC sequence FOR TESTING
                 #self.Eq = np.ones(self.Nsub, dtype=complex)  # TEMPORARY SET TO ONES FOR TESTING
                 #print(f"Final channel equalizer Eq computed.")
                 self.y = correlate(signal, self.sts_no_cp, mode='valid')
                 self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             elif(self.i >= self.lts_repetitions) and (self.i < self.data_frame_length + self.lts_repetitions):
-                #print(f"Data phase: i={self.i} (lts_reps={self.lts_repetitions}, data_len={self.data_frame_length})")
                 # Data frame processing    
-                # SFO corrections
-                self.index_correction()
-                # Correct interpolating
-                if self.start_index + self.Lfft * self.oversampling_factor > len(signal)*(1 - self.normalized_sfo):
-                    #print(f"Not enough samples: need {self.start_index + self.Lfft * self.oversampling_factor}, have {len(signal)}")
-                    #print("Aumenting i on if succesful")
-                    self.i += 1
-                    return self.start_flag, self.start_index, self.y, self.i, self.Eq
-                else:
-                    #chunk = signal[self.start_index : self.start_index + int(self.sfo_deviation)]
-                    #chunk = self.interpolate_correction(chunk)
-                    chunk = signal[self.start_index - 40: self.start_index + self.Lfft * self.oversampling_factor - 40]
-                    # Process data frames
-                    #self.y = np.multiply(self.recover_dco_ofdm(chunk), np.conj(np.flip(self.Eq)))
-                    self.y = self.recover_dco_ofdm(chunk) * self.Eq
-                    pilot_tones_indexes = [0, 13, 25, 38, 50, 62]
-                    #pilot_tones_indexes = np.arange(0, 62)
-                    # Check pilot tones
-                    pilot_values = self.y[pilot_tones_indexes]
-                    angles = np.angle(pilot_values)
-                    unwrapped_angles = np.unwrap(angles)
-                    display_vector = np.zeros_like(self.y)
-                    # Interpolate to find the phase correction for all subcarriers
-                    display_vector = np.interp(np.arange(len(self.y)), pilot_tones_indexes, unwrapped_angles)
-                    #Now correct the symbols with the interpolated phase correction
-                    self.y = self.y * np.exp(-1j * display_vector)
-                    #self.y = display_vector
-                    #print(f"Processed data frame: y.size={self.y.size}")
-                    #print("Aumenting i on else succesful")
-                    self.i += 1
+                self.index_correction() # STO correction
+                chunk = signal[self.start_index - 40: self.start_index + self.Lfft * self.oversampling_factor - 40]
+                # Process data frames
+                self.y = self.recover_dco_ofdm(chunk) * self.Eq
+                pilot_tones_indexes = [0, 13, 25, 38, 50, 62]
+                # Check pilot tones
+                pilot_values = self.y[pilot_tones_indexes]
+                angles = np.angle(pilot_values)
+                unwrapped_angles = np.unwrap(angles)
+                display_vector = np.zeros_like(self.y)
+                # Interpolate to find the phase correction for all subcarriers
+                display_vector = np.interp(np.arange(len(self.y)), pilot_tones_indexes, unwrapped_angles)
+                #Now correct the symbols with the interpolated phase correction
+                self.y = self.y * np.exp(-1j * display_vector)
+                self.i += 1
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
             else:
-                if self.i == self.data_frame_length + self.lts_repetitions :
+                if self.i == self.data_frame_length + self.lts_repetitions + 1:
                     print(f"End of packet, returning zeros at i={self.i}")
                 self.i += 1
                 self.y = np.zeros(self.Lfft//2-1, dtype=complex)
