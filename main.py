@@ -339,11 +339,17 @@ try:
         all_real_vals = []
         all_imag_vals = []
         
+        # Define pilot indices to exclude from constellation plot
+        pilot_indices = [0, 13, 25, 38, 50, 62]
+        
         # Plot each iteration's symbols with different colors
         for iteration_idx, y_data in enumerate(ys_copy_list):
-            # Filter out exactly 0+0j values before plotting
+            # Filter out exactly 0+0j values and pilot tones before plotting
             non_zero_mask = (y_data != 0+0j)
-            filtered_y = y_data[non_zero_mask]
+            pilot_mask = np.ones(len(y_data), dtype=bool)
+            pilot_mask[pilot_indices] = False
+            combined_mask = non_zero_mask & pilot_mask
+            filtered_y = y_data[combined_mask]
             
             if filtered_y.size > 0:
                 real_vals = np.real(filtered_y)

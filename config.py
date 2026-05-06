@@ -5,9 +5,9 @@ import scipy.io.wavfile as wav
 def get_config():
     # -------- System parameters (must match TX) --------
     Lfft = 128  # FFT length
-    cp_length = 16 # Cyclic prefix length
+    cp_length = 8 # Cyclic prefix length
     oversampling_factor = 10  # Note: parameter name in constructor
-    data_frame_length = 19
+    data_frame_length = 30
     lts_repetitions = 9
 
     # -------- Load reference signals from WAV files --------

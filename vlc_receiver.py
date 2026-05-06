@@ -28,7 +28,7 @@ class OFDMReceiver:
         self.sto_acc=0.0
         self.Eq = np.zeros(self.Nsub, dtype=complex)
         self.y = np.array([], dtype=complex)
-        self.sto_correction = -int((cp_length - 1)*oversampling_factor)
+        self.sto_correction = -int((cp_length/2 - 1)*oversampling_factor)
         self.sto_counter = 0.0
 
     def packet_detection(self, received_signal):
@@ -80,7 +80,7 @@ class OFDMReceiver:
         new_data = np.concatenate((data, data_ask))
         #print(f"Data length: {len(new_data)}")"""
         #data[1:] = 1 + 0j
-        zc_data = self.generate_complex_zc(61)
+        zc_data = self.generate_complex_zc(61)  # Scale to match QPSK energy
         data[1:] = zc_data
         #X = np.fft.fft(np.real(self.lts_no_cp), n=self.Lfft)[1:self.Nsub+1]
         #X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
@@ -130,6 +130,7 @@ class OFDMReceiver:
         bits[1::2] = 1 - i_nonneg  # im>=0 => 0; im<0 => 1
         return bits
 
+# Unused function
     def minn_method_sto_estimation(self, received_signal):
         corr_length = self.window_length + (self.cp_length * self.oversampling_factor) - 1
         minn_metric = np.zeros(corr_length, dtype=complex)
@@ -173,6 +174,7 @@ class OFDMReceiver:
             self.start_index += int(self.sto_int) + int(self.sto_frac_corr)
         pass
 
+# Unused function
     def interpolate_correction(self, signal):
         real_length = (self.Lfft * self.oversampling_factor)
         length_with_sfo =  real_length + self.sto_correction

@@ -139,7 +139,16 @@ indexes_copy = list(indexes)
 ys_last = [y.copy() if isinstance(y, np.ndarray) else None for y in latest_y_by_i]
 
 # Plot consolidated constellation
-all_y = np.concatenate(collected_ys) if len(collected_ys) > 0 else np.array([], dtype=complex)
+# Filter out pilots and zeros before plotting
+pilot_indices = [0, 13, 25, 38, 50, 62]
+filtered_ys = []
+for y in collected_ys:
+    non_zero_mask = (y != 0+0j)
+    pilot_mask = np.ones(len(y), dtype=bool)
+    pilot_mask[pilot_indices] = False
+    combined_mask = non_zero_mask & pilot_mask
+    filtered_ys.append(y[combined_mask])
+all_y = np.concatenate(filtered_ys) if len(filtered_ys) > 0 else np.array([], dtype=complex)
 
 fig_cons = plt.figure("Collected Constellation", figsize=(8, 8))
 ax_cons = fig_cons.add_subplot(111)
