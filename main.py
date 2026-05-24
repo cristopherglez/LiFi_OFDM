@@ -414,14 +414,14 @@ try:
                 rx_bits_list.append(bits)
         rx_bits = np.concatenate(rx_bits_list).astype(int) if len(rx_bits_list) > 0 else np.array([], dtype=int)
 
-        # Load reference bits exclusively from tx_reference_ber.txt
-        import os
-        repo_dir = os.path.dirname(__file__)
-        txt_path = os.path.join(repo_dir, 'tx_reference_ber.txt')
+        # Load reference bits exclusively from tx_reference_ber.txt (same folder as this script)
+        from pathlib import Path
+        repo_dir = Path(__file__).resolve().parent
+        txt_path = repo_dir / 'tx_reference_ber.txt'
         ref_bits = None
-        if os.path.exists(txt_path) and os.path.getsize(txt_path) > 0:
+        if txt_path.exists() and txt_path.stat().st_size > 0:
             try:
-                ref_bits = np.loadtxt(txt_path, dtype=int)
+                ref_bits = np.loadtxt(str(txt_path), dtype=int)
             except Exception as e:
                 print(f"Failed to load reference bits from {txt_path}: {e}")
                 ref_bits = None
