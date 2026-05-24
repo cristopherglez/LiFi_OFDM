@@ -414,16 +414,57 @@ try:
                 rx_bits_list.append(bits)
         rx_bits = np.concatenate(rx_bits_list).astype(int) if len(rx_bits_list) > 0 else np.array([], dtype=int)
 
-        # Load reference bits exclusively from tx_reference_ber.txt (same folder as this script)
+        # Load reference bits from tx_reference_ber.txt which contains frames
+        # of complex QPSK symbols (format: "Frame 0: a+bj, c+dj, ..."). Parse and
+        # convert each data symbol to two bits matching receiver.qpsk_demod().
         from pathlib import Path
         repo_dir = Path(__file__).resolve().parent
         txt_path = repo_dir / 'tx_reference_ber.txt'
         ref_bits = None
         if txt_path.exists() and txt_path.stat().st_size > 0:
             try:
-                ref_bits = np.loadtxt(str(txt_path), dtype=int)
+                frames = []
+                with open(txt_path, 'r', encoding='utf-8') as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        # Expect lines like: "Frame 0: 1.4142+0.0000j, 0.7071+0.7071j, ..."
+                        if ':' in line:
+                            _, data = line.split(':', 1)
+                        else:
+                            data = line
+                        # split by commas and parse complex values
+                        toks = [t.strip() for t in data.split(',') if t.strip()]
+                        try:
+                            sym = [complex(t.replace('i', 'j')) for t in toks]
+                        except Exception:
+                            # try forgiving replacements (remove spaces)
+                            sym = []
+                            for t in toks:
+                                tt = t.replace(' ', '').replace('i', 'j')
+                                try:
+                                    sym.append(complex(tt))
+                                except Exception:
+                                    pass
+                        if sym:
+                            frames.append(sym)
+
+                # Convert frames -> flat reference bits, excluding pilot indices
+                pilot_indices = [0, 13, 25, 38, 50, 62]
+                ref_bits_list = []
+                for sym_frame in frames:
+                    L = len(sym_frame)
+                    mask = [i for i in range(L) if i not in pilot_indices]
+                    for idx in mask:
+                        s = sym_frame[idx]
+                        # map symbol to bits: re>=0 -> bit0=0 else 1; im>=0 -> bit1=0 else 1
+                        b0 = 0 if (s.real >= 0) else 1
+                        b1 = 0 if (s.imag >= 0) else 1
+                        ref_bits_list.extend([b0, b1])
+                ref_bits = np.array(ref_bits_list, dtype=int)
             except Exception as e:
-                print(f"Failed to load reference bits from {txt_path}: {e}")
+                print(f"Failed to parse reference symbols from {txt_path}: {e}")
                 ref_bits = None
 
         ber_text = "BER: --"
