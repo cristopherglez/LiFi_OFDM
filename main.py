@@ -398,6 +398,53 @@ try:
         ax_cons.set_ylim(-2, 2)
     
     ax_cons.set_title(f"Constellation by Iteration ({len(ys_copy_list)} iterations, {sum(len(y) for y in ys_copy_list)} total symbols)")
+    # ---------- BER calculation (exclude pilot tones) ----------
+    try:
+        pilot_indices = [0, 13, 25, 38, 50, 62]
+        rx_bits_list = []
+        for y_data in ys_copy_list:
+            # build mask: exclude pilots and zeros
+            mask = np.ones(len(y_data), dtype=bool)
+            pilot_mask_indices = [p for p in pilot_indices if p < len(mask)]
+            mask[pilot_mask_indices] = False
+            mask &= (y_data != 0+0j)
+            data_syms = y_data[mask]
+            if data_syms.size > 0:
+                bits = receiver.qpsk_demod(data_syms)
+                rx_bits_list.append(bits)
+        rx_bits = np.concatenate(rx_bits_list).astype(int) if len(rx_bits_list) > 0 else np.array([], dtype=int)
+
+        # Load reference bits exclusively from tx_reference_ber.txt
+        import os
+        repo_dir = os.path.dirname(__file__)
+        txt_path = os.path.join(repo_dir, 'tx_reference_ber.txt')
+        ref_bits = None
+        if os.path.exists(txt_path) and os.path.getsize(txt_path) > 0:
+            try:
+                ref_bits = np.loadtxt(txt_path, dtype=int)
+            except Exception as e:
+                print(f"Failed to load reference bits from {txt_path}: {e}")
+                ref_bits = None
+
+        ber_text = "BER: --"
+        if ref_bits is None or getattr(ref_bits, 'size', 0) == 0:
+            print("Reference bits not found or empty; skipping BER calculation.")
+        elif rx_bits.size == 0:
+            print("No received data bits collected; skipping BER calculation.")
+        else:
+            n = min(len(ref_bits), len(rx_bits))
+            if n == 0:
+                print("No overlapping bits for BER calculation.")
+            else:
+                errors = np.sum(ref_bits[:n] != rx_bits[:n])
+                ber = float(errors) / n
+                ber_text = f"BER: {ber:.6f}  Errors: {errors}/{n}"
+                print(ber_text)
+
+        ax_cons.text(0.02, 0.98, ber_text, transform=ax_cons.transAxes, va='top', fontsize=10, bbox=dict(facecolor='white', alpha=0.8))
+    except Exception as e:
+        print(f"BER calculation failed: {e}")
+
     ax_cons.set_xlabel("In-phase")
     ax_cons.set_ylabel("Quadrature")
     ax_cons.grid(True, alpha=0.3)
