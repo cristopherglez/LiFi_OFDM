@@ -12,7 +12,7 @@ class OFDMReceiver:
         self.full_symbol_length = Lfft + cp_length
         self.window_length = self.full_symbol_length * oversampling_factor
         self.data_frame_length = data_frame_length
-        self.lts_repetitions = lts_repetitions
+        self.lts_repetitions = lts_repetitions - 1
 
         # References
         self.sts_no_cp = sts_no_cp
@@ -80,7 +80,9 @@ class OFDMReceiver:
         new_data = np.concatenate((data, data_ask))
         #print(f"Data length: {len(new_data)}")"""
         #data[1:] = 1 + 0j
-        zc_data = self.generate_complex_zc(61)  # Scale to match QPSK energy
+        zc_data = self.generate_complex_zc(61)*8  # Scale to match QPSK energy
+        #Calculate power of ZC and set to mean of one
+        zc_power = np.mean(np.abs(zc_data)**2)*2*np.sqrt(2)
         data[1:] = zc_data
         #X = np.fft.fft(np.real(self.lts_no_cp), n=self.Lfft)[1:self.Nsub+1]
         #X = np.fft.fft(delta, n=self.Lfft)[1:self.Lfft // 2]
@@ -129,35 +131,6 @@ class OFDMReceiver:
         bits[0::2] = 1 - r_nonneg  # re>=0 => 0; re<0 => 1
         bits[1::2] = 1 - i_nonneg  # im>=0 => 0; im<0 => 1
         return bits
-
-# Unused function
-    def minn_method_sto_estimation(self, received_signal):
-        corr_length = self.window_length + (self.cp_length * self.oversampling_factor) - 1
-        minn_metric = np.zeros(corr_length, dtype=complex)
-        P = np.zeros(corr_length, dtype=complex)
-        R = np.zeros(corr_length, dtype=complex)
-        L = self.Lfft*self.oversampling_factor//4
-        for d in range(corr_length - 1):
-            a_1 = received_signal[d:d + L - 1]
-            a_2 = received_signal[d + L: d + 2*L -1]
-            a_3 = received_signal[d + 2*L: d + 3*L -1]
-            a_4 = received_signal[d + 3*L: d + 4*L -1]
-            b_1 = np.abs(received_signal[d + L: d + 2*L -1])**2
-            b_2 = np.abs(received_signal[d + 3*L: d + 4*L -1])**2
-            if len(a_4) != len(a_1):
-                print(f"Length mismatch at index {d}: len(a_1)={len(a_1)}, len(a_4)={len(a_4)}")
-                print(f"Signal full length: {len(received_signal)}, d: {d}, L: {L}")
-            p = np.sum(np.vdot(a_1, a_2) + np.vdot(a_3, a_4))
-            r = np.sum(b_1 + b_2)
-            if len(a_1) < self.cp_length or len(a_2) < self.cp_length:
-                print(f"Insufficient length for Minn's correlation at index {d}")
-                minn_metric[d] = 0
-                continue
-            P[d] = abs(p)**2
-            R[d] = r**2
-            minn_metric[d] = P[d]*(R[d])
-        sto_index = int(np.argmax(np.abs(minn_metric)))
-        return sto_index, np.sum(minn_metric), minn_metric
     
     def index_correction(self):
         self.sto_acc += self.sto_frac
@@ -173,16 +146,6 @@ class OFDMReceiver:
         else: 
             self.start_index += int(self.sto_int) + int(self.sto_frac_corr)
         pass
-
-# Unused function
-    def interpolate_correction(self, signal):
-        real_length = (self.Lfft * self.oversampling_factor)
-        length_with_sfo =  real_length + self.sto_correction
-        end_idx = self.start_index + (self.Lfft*self.oversampling_factor) + self.sto_int
-        chunk = signal[self.start_index : end_idx]
-        chunk = np.interp(np.linspace(0, len(chunk), int(real_length), endpoint=False),
-                              np.arange(len(chunk)), chunk)
-        return chunk
 
     def process_zc(self, x1, x2):
         signal = np.concatenate([x1, x2]) 
@@ -247,3 +210,44 @@ class OFDMReceiver:
                 self.y = np.zeros(self.Lfft//2-1, dtype=complex)
                 return self.start_flag, self.start_index, self.y, self.i, self.Eq
         return self.start_flag, self.start_index, self.y, self.i, self.Eq
+    
+
+    """# Unused function
+    def minn_method_sto_estimation(self, received_signal):
+        corr_length = self.window_length + (self.cp_length * self.oversampling_factor) - 1
+        minn_metric = np.zeros(corr_length, dtype=complex)
+        P = np.zeros(corr_length, dtype=complex)
+        R = np.zeros(corr_length, dtype=complex)
+        L = self.Lfft*self.oversampling_factor//4
+        for d in range(corr_length - 1):
+            a_1 = received_signal[d:d + L - 1]
+            a_2 = received_signal[d + L: d + 2*L -1]
+            a_3 = received_signal[d + 2*L: d + 3*L -1]
+            a_4 = received_signal[d + 3*L: d + 4*L -1]
+            b_1 = np.abs(received_signal[d + L: d + 2*L -1])**2
+            b_2 = np.abs(received_signal[d + 3*L: d + 4*L -1])**2
+            if len(a_4) != len(a_1):
+                print(f"Length mismatch at index {d}: len(a_1)={len(a_1)}, len(a_4)={len(a_4)}")
+                print(f"Signal full length: {len(received_signal)}, d: {d}, L: {L}")
+            p = np.sum(np.vdot(a_1, a_2) + np.vdot(a_3, a_4))
+            r = np.sum(b_1 + b_2)
+            if len(a_1) < self.cp_length or len(a_2) < self.cp_length:
+                print(f"Insufficient length for Minn's correlation at index {d}")
+                minn_metric[d] = 0
+                continue
+            P[d] = abs(p)**2
+            R[d] = r**2
+            minn_metric[d] = P[d]*(R[d])
+        sto_index = int(np.argmax(np.abs(minn_metric)))
+        return sto_index, np.sum(minn_metric), minn_metric
+
+# Unused function
+    def interpolate_correction(self, signal):
+        real_length = (self.Lfft * self.oversampling_factor)
+        length_with_sfo =  real_length + self.sto_correction
+        end_idx = self.start_index + (self.Lfft*self.oversampling_factor) + self.sto_int
+        chunk = signal[self.start_index : end_idx]
+        chunk = np.interp(np.linspace(0, len(chunk), int(real_length), endpoint=False),
+                              np.arange(len(chunk)), chunk)
+        return chunk
+"""
